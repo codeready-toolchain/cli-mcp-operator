@@ -1,0 +1,17 @@
+name: ci-check-gomod
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'go.mod'
+
+jobs:
+  gomodreplacements:
+    name: go.mod replacements
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+    - name: check
+      uses: codeready-toolchain/toolchain-cicd/gomod-check@master
