@@ -1,0 +1,19 @@
+inheritance: true
+knowledge_base:
+  linked_repositories:
+    - repository: 'codeready-toolchain/mcp-common'
+      instructions: >
+        mcp-common contains shared metrics, logging middleware, and version utilities used by all MCP servers.
+
+        When reviewing cli-mcp-server changes:
+        - Check if cli-mcp-server is duplicating middleware or utilities that already exist in mcp-common (pkg/metrics, pkg/middleware, pkg/version).
+        - Verify that MetricsMiddleware and LoggingMiddleware are wired consistently with how mcp-server-devsandbox uses them.
+        - Flag if cli-mcp-server is making assumptions about mcp-common's interfaces that aren't documented or guaranteed.
+    - repository: 'codeready-toolchain/mcp-server-devsandbox'
+      instructions: >
+        mcp-server-devsandbox is the reference MCP server implementation that cli-mcp-server follows for patterns and conventions.
+
+        When reviewing cli-mcp-server changes:
+        - Verify that MCP server setup (Cobra CLI, StreamableHTTPHandler, middleware wiring, /metrics and /health endpoints) follows mcp-server-devsandbox conventions.
+        - Check that CI/CD workflows, Makefile targets, and container build patterns are consistent.
+        - If cli-mcp-server deviates from established patterns, flag it for justification.
