@@ -138,8 +138,18 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	start := time.Now()
 
 	if _, err := io.WriteString(bs.stdin, wrapped); err != nil {
+		if stateReset {
+			return nil, fmt.Errorf("write to stdin: %w", err)
+		}
 		bs.alive = false
-		return nil, fmt.Errorf("write to stdin: %w", err)
+		if err := bs.spawn(); err != nil {
+			return nil, fmt.Errorf("failed to respawn bash: %w", err)
+		}
+		stateReset = true
+		if _, err := io.WriteString(bs.stdin, wrapped); err != nil {
+			bs.alive = false
+			return nil, fmt.Errorf("write to stdin after respawn: %w", err)
+		}
 	}
 
 	type readResult struct {
