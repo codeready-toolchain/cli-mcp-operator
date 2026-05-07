@@ -93,7 +93,7 @@ func (bs *BashSession) Close() error {
 		}
 	}
 	if bs.cmd != nil && bs.cmd.Process != nil {
-		if err := bs.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if err := syscall.Kill(-bs.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 			errs = append(errs, fmt.Errorf("kill bash: %w", err))
 		}
 		bs.cmd.Wait() //nolint:errcheck
@@ -127,14 +127,11 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	endMarker := delimiter + "_END"
 	exitMarker := delimiter + "_EXIT_"
 
-	// Wrapped command:
-	//   echo <START>
-	//   <command>
-	//   __exit=$?
-	//   echo <END>
-	//   echo <EXIT_$__exit> >&2
+	// Wrapped command isolates user stdin via </dev/null so commands like
+	// cat or read cannot consume the protocol markers that follow.
+	// Leading : (no-op) ensures the group is valid even for empty commands.
 	wrapped := fmt.Sprintf(
-		"echo %s\n%s\n__exit=$?\necho %s\necho %s${__exit} >&2\n",
+		"echo %s\n{ :\n%s\n} </dev/null\n__exit=$?\necho %s\necho %s${__exit} >&2\n",
 		startMarker, command, endMarker, exitMarker,
 	)
 
@@ -158,11 +155,14 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	stdoutReader := bs.stdout
 	stderrReader := bs.stderr
 
+	const maxLineSize = 1024 * 1024 // 1 MiB — shell output can exceed Scanner's 64 KiB default
+
 	// Read stdout until end marker
 	go func() {
 		var lines []string
 		capturing := false
 		scanner := bufio.NewScanner(stdoutReader)
+		scanner.Buffer(make([]byte, 64*1024), maxLineSize)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.Contains(line, startMarker) {
@@ -184,6 +184,7 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	go func() {
 		var lines []string
 		scanner := bufio.NewScanner(stderrReader)
+		scanner.Buffer(make([]byte, 64*1024), maxLineSize)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.Contains(line, exitMarker) {
@@ -220,6 +221,7 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 			if res.exitCode >= 0 {
 				exitCode = res.exitCode
 			} else {
+				exitCode = 137
 				bs.alive = false
 			}
 			completed++
