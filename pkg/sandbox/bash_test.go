@@ -12,7 +12,11 @@ func newTestSession(t *testing.T) *BashSession {
 	t.Helper()
 	bs, err := NewBashSession()
 	require.NoError(t, err)
-	t.Cleanup(func() { bs.Close() })
+	t.Cleanup(func() {
+		if err := bs.Close(); err != nil {
+			t.Errorf("BashSession.Close: %v", err)
+		}
+	})
 	return bs
 }
 
@@ -130,9 +134,11 @@ func TestTimeoutClamping(t *testing.T) {
 func TestCrashRecovery(t *testing.T) {
 	bs := newTestSession(t)
 
-	// Kill the bash process to simulate a crash
 	bs.mu.Lock()
-	bs.cmd.Process.Kill()
+	if err := bs.cmd.Process.Kill(); err != nil {
+		bs.mu.Unlock()
+		t.Fatalf("failed to kill bash process: %v", err)
+	}
 	bs.cmd.Wait() //nolint:errcheck
 	bs.alive = false
 	bs.mu.Unlock()

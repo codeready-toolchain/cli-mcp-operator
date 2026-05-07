@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -85,14 +86,19 @@ func (bs *BashSession) Close() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	bs.alive = false
+	var errs []error
 	if bs.stdin != nil {
-		bs.stdin.Close()
+		if err := bs.stdin.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close stdin: %w", err))
+		}
 	}
 	if bs.cmd != nil && bs.cmd.Process != nil {
-		bs.cmd.Process.Kill()
+		if err := bs.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			errs = append(errs, fmt.Errorf("kill bash: %w", err))
+		}
 		bs.cmd.Wait() //nolint:errcheck
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Execute runs a command in the persistent bash session with the given timeout.
@@ -205,10 +211,7 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 		select {
 		case res := <-stdoutCh:
 			stdoutLines = res.lines
-			if res.err != nil && res.err != io.EOF {
-				// pipe error but not a normal exit marker scenario
-			}
-			if res.err == io.EOF {
+			if res.err != nil {
 				bs.alive = false
 			}
 			completed++
@@ -216,15 +219,16 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 			stderrLines = res.lines
 			if res.exitCode >= 0 {
 				exitCode = res.exitCode
-			}
-			if res.err == io.EOF {
+			} else {
 				bs.alive = false
 			}
 			completed++
 		case <-timer.C:
 			// Timeout: kill the process group so child processes are also killed.
 			if bs.cmd != nil && bs.cmd.Process != nil {
-				syscall.Kill(-bs.cmd.Process.Pid, syscall.SIGKILL)
+				if err := syscall.Kill(-bs.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+					_ = err
+				}
 				bs.cmd.Wait() //nolint:errcheck
 			}
 			bs.alive = false
