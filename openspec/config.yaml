@@ -1,0 +1,7 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Go, Kubernetes (client-go), MCP SDK (go-sdk)
+  Two binaries in one repo: cli-mcp-server (control plane) and sandbox-agent (data plane)
+  Follows codeready-toolchain conventions (Cobra CLI, mcp-common middleware, kube-rbac-proxy)
+  Domain: Sandboxed shell execution environment for LLM investigation agents
