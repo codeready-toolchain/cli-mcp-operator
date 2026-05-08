@@ -74,6 +74,19 @@ func (bs *BashSession) spawn() error {
 	return nil
 }
 
+// reapProcess kills and waits on the current bash process so it doesn't
+// become a zombie. Must be called with bs.mu held.
+func (bs *BashSession) reapProcess() {
+	if bs.cmd == nil || bs.cmd.Process == nil {
+		return
+	}
+	if bs.stdin != nil {
+		bs.stdin.Close() //nolint:errcheck
+	}
+	_ = syscall.Kill(-bs.cmd.Process.Pid, syscall.SIGKILL)
+	bs.cmd.Wait() //nolint:errcheck
+}
+
 // Alive reports whether the bash process is running.
 func (bs *BashSession) Alive() bool {
 	bs.mu.Lock()
@@ -86,19 +99,8 @@ func (bs *BashSession) Close() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	bs.alive = false
-	var errs []error
-	if bs.stdin != nil {
-		if err := bs.stdin.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close stdin: %w", err))
-		}
-	}
-	if bs.cmd != nil && bs.cmd.Process != nil {
-		if err := syscall.Kill(-bs.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			errs = append(errs, fmt.Errorf("kill bash: %w", err))
-		}
-		bs.cmd.Wait() //nolint:errcheck
-	}
-	return errors.Join(errs...)
+	bs.reapProcess()
+	return nil
 }
 
 // Execute runs a command in the persistent bash session with the given timeout.
@@ -116,6 +118,7 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 
 	stateReset := false
 	if !bs.alive {
+		bs.reapProcess()
 		if err := bs.spawn(); err != nil {
 			return nil, fmt.Errorf("failed to respawn bash: %w", err)
 		}
@@ -142,6 +145,7 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 			return nil, fmt.Errorf("write to stdin: %w", err)
 		}
 		bs.alive = false
+		bs.reapProcess()
 		if err := bs.spawn(); err != nil {
 			return nil, fmt.Errorf("failed to respawn bash: %w", err)
 		}
@@ -165,38 +169,34 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	stdoutReader := bs.stdout
 	stderrReader := bs.stderr
 
-	const maxLineSize = 1024 * 1024 // 1 MiB — shell output can exceed Scanner's 64 KiB default
-
 	// Read stdout until end marker
 	go func() {
 		var lines []string
 		capturing := false
-		scanner := bufio.NewScanner(stdoutReader)
-		scanner.Buffer(make([]byte, 64*1024), maxLineSize)
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			line, err := stdoutReader.ReadString('\n')
+			line = strings.TrimRight(line, "\n")
 			if strings.Contains(line, startMarker) {
 				capturing = true
-				continue
-			}
-			if strings.Contains(line, endMarker) {
+			} else if strings.Contains(line, endMarker) {
 				stdoutCh <- readResult{lines: lines}
 				return
-			}
-			if capturing {
+			} else if capturing && line != "" {
 				lines = append(lines, line)
 			}
+			if err != nil {
+				stdoutCh <- readResult{lines: lines, err: err}
+				return
+			}
 		}
-		stdoutCh <- readResult{lines: lines, err: scanner.Err()}
 	}()
 
 	// Read stderr until exit marker
 	go func() {
 		var lines []string
-		scanner := bufio.NewScanner(stderrReader)
-		scanner.Buffer(make([]byte, 64*1024), maxLineSize)
-		for scanner.Scan() {
-			line := scanner.Text()
+		for {
+			line, err := stderrReader.ReadString('\n')
+			line = strings.TrimRight(line, "\n")
 			if strings.Contains(line, exitMarker) {
 				codeStr := strings.TrimPrefix(line, exitMarker)
 				codeStr = strings.TrimSpace(codeStr)
@@ -207,8 +207,11 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 			if line != "" {
 				lines = append(lines, line)
 			}
+			if err != nil {
+				stderrCh <- readResult{lines: lines, exitCode: -1, err: err}
+				return
+			}
 		}
-		stderrCh <- readResult{lines: lines, exitCode: -1, err: scanner.Err()}
 	}()
 
 	timer := time.NewTimer(timeout)
@@ -245,13 +248,15 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 			}
 			bs.alive = false
 
-			// Drain reader goroutines so they don't leak
+			// Drain reader goroutines, preserving any partial output
 			drainTimeout := time.After(2 * time.Second)
 			for completed < 2 {
 				select {
-				case <-stdoutCh:
+				case res := <-stdoutCh:
+					stdoutLines = res.lines
 					completed++
-				case <-stderrCh:
+				case res := <-stderrCh:
+					stderrLines = res.lines
 					completed++
 				case <-drainTimeout:
 					completed = 2
@@ -259,9 +264,10 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 			}
 
 			duration := time.Since(start)
+			timeoutStderr := append(stderrLines, "command timed out")
 			return &agent.ExecResponse{
 				Stdout:     strings.Join(stdoutLines, "\n"),
-				Stderr:     "command timed out",
+				Stderr:     strings.Join(timeoutStderr, "\n"),
 				ExitCode:   137,
 				DurationMs: duration.Milliseconds(),
 			}, nil

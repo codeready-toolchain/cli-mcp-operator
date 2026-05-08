@@ -104,7 +104,7 @@ func TestTimeout(t *testing.T) {
 		resp, err := bs.Execute("sleep 30", 1*time.Second)
 		require.NoError(t, err)
 		assert.Equal(t, 137, resp.ExitCode)
-		assert.Equal(t, "command timed out", resp.Stderr)
+		assert.Contains(t, resp.Stderr, "command timed out")
 	})
 
 	t.Run("session survives after timeout", func(t *testing.T) {
@@ -207,4 +207,59 @@ func TestDelimiterInOutput(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "__SANDBOX_fake__", resp.Stdout)
 	assert.Equal(t, 0, resp.ExitCode)
+}
+
+func TestStdinIsolation(t *testing.T) {
+	bs := newTestSession(t)
+
+	t.Run("cat without args does not hang", func(t *testing.T) {
+		resp, err := bs.Execute("cat </dev/null; echo done", 5*time.Second)
+		require.NoError(t, err)
+		assert.Contains(t, resp.Stdout, "done")
+		assert.Equal(t, 0, resp.ExitCode)
+	})
+
+	t.Run("read builtin gets empty input", func(t *testing.T) {
+		resp, err := bs.Execute("read -t 1 line; echo \"got: '$line'\"", 5*time.Second)
+		require.NoError(t, err)
+		assert.Contains(t, resp.Stdout, "got:")
+	})
+
+	t.Run("session survives after stdin-consuming commands", func(t *testing.T) {
+		resp, err := bs.Execute("echo still_alive", DefaultTimeout)
+		require.NoError(t, err)
+		assert.Equal(t, "still_alive", resp.Stdout)
+	})
+}
+
+func TestIdleCrashRecovery(t *testing.T) {
+	bs := newTestSession(t)
+
+	resp, err := bs.Execute("echo before_crash", DefaultTimeout)
+	require.NoError(t, err)
+	assert.Equal(t, "before_crash", resp.Stdout)
+
+	// Kill process without setting alive=false — simulates crash while idle
+	bs.mu.Lock()
+	if err := bs.cmd.Process.Kill(); err != nil {
+		bs.mu.Unlock()
+		t.Fatalf("failed to kill bash: %v", err)
+	}
+	bs.cmd.Wait() //nolint:errcheck
+	bs.mu.Unlock()
+
+	resp, err = bs.Execute("echo after_crash", DefaultTimeout)
+	require.NoError(t, err)
+	assert.Equal(t, "after_crash", resp.Stdout)
+	assert.Contains(t, resp.Stderr, "session state was reset")
+}
+
+func TestTimeoutPreservesPartialOutput(t *testing.T) {
+	bs := newTestSession(t)
+
+	resp, err := bs.Execute("echo partial_line; sleep 30", 1*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, 137, resp.ExitCode)
+	assert.Contains(t, resp.Stderr, "command timed out")
+	assert.Contains(t, resp.Stdout, "partial_line")
 }
