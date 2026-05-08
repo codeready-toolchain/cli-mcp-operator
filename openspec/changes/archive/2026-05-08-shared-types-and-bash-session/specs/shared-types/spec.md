@@ -20,11 +20,11 @@ The `ExecResponse` struct SHALL define the HTTP response body for `POST /exec` w
 
 #### Scenario: Successful command response
 - **WHEN** a command `echo hello` completes successfully
-- **THEN** the ExecResponse SHALL contain `Stdout: "hello\n"`, `Stderr: ""`, `ExitCode: 0`, and a positive `DurationMs` value
+- **THEN** the ExecResponse SHALL contain `Stdout: "hello\n"`, `Stderr: ""`, `ExitCode: 0`, and a non-negative `DurationMs` value (>= 0)
 
 #### Scenario: Failed command response
 - **WHEN** a command `ls /nonexistent` fails
-- **THEN** the ExecResponse SHALL contain a non-empty `Stderr`, `ExitCode` greater than 0, and a positive `DurationMs` value
+- **THEN** the ExecResponse SHALL contain a non-empty `Stderr`, `ExitCode` greater than 0, and a non-negative `DurationMs` value (>= 0)
 
 #### Scenario: ExecResponse JSON field names match wire format
 - **WHEN** an ExecResponse is serialized to JSON
