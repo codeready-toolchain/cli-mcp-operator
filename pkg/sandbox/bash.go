@@ -14,14 +14,35 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
 )
 
 const (
 	DefaultTimeout = 60 * time.Second
 	MaxTimeout     = 300 * time.Second
+
+	killWaitTimeout = 5 * time.Second
+
+	sessionResetNotice = "[session state was reset — previous bash process exited]\n"
 )
+
+// ExecResult is the domain-specific result of a command execution.
+// It stays in pkg/sandbox with no dependency on the wire-format types in pkg/agent.
+// The HTTP handler maps this to agent.ExecResponse (~5 lines).
+type ExecResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+	Duration time.Duration
+}
+
+// BashConfig holds configuration for a BashSession.
+// Currently empty — provides a stable constructor extension point.
+type BashConfig struct{}
+
+// NewDefaultBashConfig returns a BashConfig with default settings.
+func NewDefaultBashConfig() BashConfig {
+	return BashConfig{}
+}
 
 // BashSession manages a persistent bash process with stdin/stdout/stderr pipes.
 // Commands are isolated using a UUID-based delimiter protocol.
@@ -31,11 +52,11 @@ type BashSession struct {
 	stdout *bufio.Reader
 	stderr *bufio.Reader
 	mu     sync.Mutex
-	alive  bool
+	dead   bool
 }
 
 // NewBashSession spawns a persistent bash process.
-func NewBashSession() (*BashSession, error) {
+func NewBashSession(cfg BashConfig) (*BashSession, error) {
 	bs := &BashSession{}
 	if err := bs.spawn(); err != nil {
 		return nil, fmt.Errorf("failed to start bash: %w", err)
@@ -69,7 +90,7 @@ func (bs *BashSession) spawn() error {
 	bs.stdin = stdin
 	bs.stdout = bufio.NewReader(stdoutPipe)
 	bs.stderr = bufio.NewReader(stderrPipe)
-	bs.alive = true
+	bs.dead = false
 
 	return nil
 }
@@ -87,25 +108,27 @@ func (bs *BashSession) reapProcess() {
 	bs.cmd.Wait() //nolint:errcheck
 }
 
-// Alive reports whether the bash process is running.
-func (bs *BashSession) Alive() bool {
+// IsAlive reports whether the bash process is running.
+func (bs *BashSession) IsAlive() bool {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-	return bs.alive
+	return !bs.dead
 }
 
-// Close terminates the bash process.
+// Close terminates the bash process. It is idempotent.
 func (bs *BashSession) Close() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-	bs.alive = false
-	bs.reapProcess()
+	if !bs.dead {
+		bs.dead = true
+		bs.reapProcess()
+	}
 	return nil
 }
 
 // Execute runs a command in the persistent bash session with the given timeout.
 // If the bash process has crashed, it respawns automatically and reports the reset in stderr.
-func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.ExecResponse, error) {
+func (bs *BashSession) Execute(command string, timeout time.Duration) (*ExecResult, error) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -117,7 +140,7 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	}
 
 	stateReset := false
-	if !bs.alive {
+	if bs.dead {
 		bs.reapProcess()
 		if err := bs.spawn(); err != nil {
 			return nil, fmt.Errorf("failed to respawn bash: %w", err)
@@ -144,20 +167,20 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 		if stateReset {
 			return nil, fmt.Errorf("write to stdin: %w", err)
 		}
-		bs.alive = false
+		bs.dead = true
 		bs.reapProcess()
 		if err := bs.spawn(); err != nil {
 			return nil, fmt.Errorf("failed to respawn bash: %w", err)
 		}
 		stateReset = true
 		if _, err := io.WriteString(bs.stdin, wrapped); err != nil {
-			bs.alive = false
+			bs.dead = true
 			return nil, fmt.Errorf("write to stdin after respawn: %w", err)
 		}
 	}
 
 	type readResult struct {
-		lines    []string
+		output   string
 		exitCode int
 		err      error
 	}
@@ -165,50 +188,45 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	stdoutCh := make(chan readResult, 1)
 	stderrCh := make(chan readResult, 1)
 
-	// Capture readers locally so goroutines don't race with spawn()
 	stdoutReader := bs.stdout
 	stderrReader := bs.stderr
 
-	// Read stdout until end marker
 	go func() {
-		var lines []string
+		var buf strings.Builder
 		capturing := false
 		for {
 			line, err := stdoutReader.ReadString('\n')
-			line = strings.TrimRight(line, "\n")
 			if strings.Contains(line, startMarker) {
 				capturing = true
 			} else if strings.Contains(line, endMarker) {
-				stdoutCh <- readResult{lines: lines}
+				stdoutCh <- readResult{output: strings.TrimRight(buf.String(), "\n")}
 				return
-			} else if capturing && line != "" {
-				lines = append(lines, line)
+			} else if capturing {
+				buf.WriteString(line)
 			}
 			if err != nil {
-				stdoutCh <- readResult{lines: lines, err: err}
+				stdoutCh <- readResult{output: strings.TrimRight(buf.String(), "\n"), err: err}
 				return
 			}
 		}
 	}()
 
-	// Read stderr until exit marker
 	go func() {
-		var lines []string
+		var buf strings.Builder
 		for {
 			line, err := stderrReader.ReadString('\n')
-			line = strings.TrimRight(line, "\n")
 			if strings.Contains(line, exitMarker) {
-				codeStr := strings.TrimPrefix(line, exitMarker)
+				codeStr := line[strings.Index(line, exitMarker)+len(exitMarker):]
 				codeStr = strings.TrimSpace(codeStr)
 				code, _ := strconv.Atoi(codeStr)
-				stderrCh <- readResult{lines: lines, exitCode: code}
+				stderrCh <- readResult{output: strings.TrimRight(buf.String(), "\n"), exitCode: code}
 				return
 			}
 			if line != "" {
-				lines = append(lines, line)
+				buf.WriteString(line)
 			}
 			if err != nil {
-				stderrCh <- readResult{lines: lines, exitCode: -1, err: err}
+				stderrCh <- readResult{output: strings.TrimRight(buf.String(), "\n"), exitCode: -1, err: err}
 				return
 			}
 		}
@@ -217,46 +235,44 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	var stdoutLines, stderrLines []string
+	var stdoutStr, stderrStr string
 	exitCode := 0
 	completed := 0
 
 	for completed < 2 {
 		select {
 		case res := <-stdoutCh:
-			stdoutLines = res.lines
+			stdoutStr = res.output
 			if res.err != nil {
-				bs.alive = false
+				bs.dead = true
 			}
 			completed++
 		case res := <-stderrCh:
-			stderrLines = res.lines
+			stderrStr = res.output
 			if res.exitCode >= 0 {
 				exitCode = res.exitCode
 			} else {
 				exitCode = 137
-				bs.alive = false
+				bs.dead = true
 			}
 			completed++
 		case <-timer.C:
-			// Timeout: kill the process group so child processes are also killed.
 			if bs.cmd != nil && bs.cmd.Process != nil {
 				if err := syscall.Kill(-bs.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 					_ = err
 				}
 				bs.cmd.Wait() //nolint:errcheck
 			}
-			bs.alive = false
+			bs.dead = true
 
-			// Drain reader goroutines, preserving any partial output
-			drainTimeout := time.After(2 * time.Second)
+			drainTimeout := time.After(killWaitTimeout)
 			for completed < 2 {
 				select {
 				case res := <-stdoutCh:
-					stdoutLines = res.lines
+					stdoutStr = res.output
 					completed++
 				case res := <-stderrCh:
-					stderrLines = res.lines
+					stderrStr = res.output
 					completed++
 				case <-drainTimeout:
 					completed = 2
@@ -264,32 +280,40 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*agent.Ex
 			}
 
 			duration := time.Since(start)
-			timeoutStderr := append(stderrLines, "command timed out")
-			return &agent.ExecResponse{
-				Stdout:     strings.Join(stdoutLines, "\n"),
-				Stderr:     strings.Join(timeoutStderr, "\n"),
-				ExitCode:   137,
-				DurationMs: duration.Milliseconds(),
+			timeoutStderr := stderrStr
+			if timeoutStderr != "" {
+				timeoutStderr += "\ncommand timed out"
+			} else {
+				timeoutStderr = "command timed out"
+			}
+
+			return &ExecResult{
+				Stdout:   stdoutStr,
+				Stderr:   timeoutStderr,
+				ExitCode: 137,
+				Duration: duration,
 			}, nil
 		}
 	}
 
 	duration := time.Since(start)
 
-	stderrStr := strings.Join(stderrLines, "\n")
+	if bs.dead {
+		return nil, fmt.Errorf("bash process exited unexpectedly")
+	}
+
 	if stateReset {
-		resetMsg := "[session state was reset — previous bash process exited]"
 		if stderrStr != "" {
-			stderrStr = resetMsg + "\n" + stderrStr
+			stderrStr = sessionResetNotice + stderrStr
 		} else {
-			stderrStr = resetMsg
+			stderrStr = strings.TrimRight(sessionResetNotice, "\n")
 		}
 	}
 
-	return &agent.ExecResponse{
-		Stdout:     strings.Join(stdoutLines, "\n"),
-		Stderr:     stderrStr,
-		ExitCode:   exitCode,
-		DurationMs: duration.Milliseconds(),
+	return &ExecResult{
+		Stdout:   stdoutStr,
+		Stderr:   stderrStr,
+		ExitCode: exitCode,
+		Duration: duration,
 	}, nil
 }

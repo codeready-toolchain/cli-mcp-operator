@@ -10,7 +10,7 @@ import (
 
 func newTestSession(t *testing.T) *BashSession {
 	t.Helper()
-	bs, err := NewBashSession()
+	bs, err := NewBashSession(NewDefaultBashConfig())
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := bs.Close(); err != nil {
@@ -22,26 +22,26 @@ func newTestSession(t *testing.T) *BashSession {
 
 func TestNewBashSession(t *testing.T) {
 	bs := newTestSession(t)
-	assert.True(t, bs.Alive())
+	assert.True(t, bs.IsAlive())
 }
 
 func TestExecuteSimpleCommand(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo hello", DefaultTimeout)
+	res, err := bs.Execute("echo hello", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "hello", resp.Stdout)
-	assert.Equal(t, 0, resp.ExitCode)
-	assert.GreaterOrEqual(t, resp.DurationMs, int64(0))
+	assert.Equal(t, "hello", res.Stdout)
+	assert.Equal(t, 0, res.ExitCode)
+	assert.GreaterOrEqual(t, res.Duration, time.Duration(0))
 }
 
 func TestExecuteMultilineOutput(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo line1; echo line2; echo line3", DefaultTimeout)
+	res, err := bs.Execute("echo line1; echo line2; echo line3", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "line1\nline2\nline3", resp.Stdout)
-	assert.Equal(t, 0, resp.ExitCode)
+	assert.Equal(t, "line1\nline2\nline3", res.Stdout)
+	assert.Equal(t, 0, res.ExitCode)
 }
 
 func TestExitCodes(t *testing.T) {
@@ -60,9 +60,9 @@ func TestExitCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp, err := bs.Execute(tt.command, DefaultTimeout)
+			res, err := bs.Execute(tt.command, DefaultTimeout)
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantCode, resp.ExitCode)
+			assert.Equal(t, tt.wantCode, res.ExitCode)
 		})
 	}
 }
@@ -73,9 +73,9 @@ func TestEnvironmentPersistence(t *testing.T) {
 	_, err := bs.Execute("export MY_TEST_VAR=hello_world", DefaultTimeout)
 	require.NoError(t, err)
 
-	resp, err := bs.Execute("echo $MY_TEST_VAR", DefaultTimeout)
+	res, err := bs.Execute("echo $MY_TEST_VAR", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "hello_world", resp.Stdout)
+	assert.Equal(t, "hello_world", res.Stdout)
 }
 
 func TestWorkingDirectoryPersistence(t *testing.T) {
@@ -84,34 +84,34 @@ func TestWorkingDirectoryPersistence(t *testing.T) {
 	_, err := bs.Execute("cd /tmp", DefaultTimeout)
 	require.NoError(t, err)
 
-	resp, err := bs.Execute("pwd", DefaultTimeout)
+	res, err := bs.Execute("pwd", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "/tmp", resp.Stdout)
+	assert.Equal(t, "/tmp", res.Stdout)
 }
 
 func TestStderrCapture(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo error_msg >&2", DefaultTimeout)
+	res, err := bs.Execute("echo error_msg >&2", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "error_msg", resp.Stderr)
+	assert.Equal(t, "error_msg", res.Stderr)
 }
 
 func TestTimeout(t *testing.T) {
 	bs := newTestSession(t)
 
 	t.Run("returns 137 and timed out message", func(t *testing.T) {
-		resp, err := bs.Execute("sleep 30", 1*time.Second)
+		res, err := bs.Execute("sleep 30", 1*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, 137, resp.ExitCode)
-		assert.Contains(t, resp.Stderr, "command timed out")
+		assert.Equal(t, 137, res.ExitCode)
+		assert.Contains(t, res.Stderr, "command timed out")
 	})
 
 	t.Run("session survives after timeout", func(t *testing.T) {
-		resp, err := bs.Execute("echo alive_after_timeout", DefaultTimeout)
+		res, err := bs.Execute("echo alive_after_timeout", DefaultTimeout)
 		require.NoError(t, err)
-		assert.Equal(t, "alive_after_timeout", resp.Stdout)
-		assert.Equal(t, 0, resp.ExitCode)
+		assert.Equal(t, "alive_after_timeout", res.Stdout)
+		assert.Equal(t, 0, res.ExitCode)
 	})
 }
 
@@ -119,15 +119,15 @@ func TestTimeoutClamping(t *testing.T) {
 	bs := newTestSession(t)
 
 	t.Run("zero timeout uses default", func(t *testing.T) {
-		resp, err := bs.Execute("echo ok", 0)
+		res, err := bs.Execute("echo ok", 0)
 		require.NoError(t, err)
-		assert.Equal(t, "ok", resp.Stdout)
+		assert.Equal(t, "ok", res.Stdout)
 	})
 
 	t.Run("negative timeout uses default", func(t *testing.T) {
-		resp, err := bs.Execute("echo ok", -5*time.Second)
+		res, err := bs.Execute("echo ok", -5*time.Second)
 		require.NoError(t, err)
-		assert.Equal(t, "ok", resp.Stdout)
+		assert.Equal(t, "ok", res.Stdout)
 	})
 }
 
@@ -140,106 +140,114 @@ func TestCrashRecovery(t *testing.T) {
 		t.Fatalf("failed to kill bash process: %v", err)
 	}
 	bs.cmd.Wait() //nolint:errcheck
-	bs.alive = false
+	bs.dead = true
 	bs.mu.Unlock()
 
-	assert.False(t, bs.Alive(), "should report not alive after crash")
+	assert.False(t, bs.IsAlive(), "should report not alive after crash")
 
-	resp, err := bs.Execute("echo recovered", DefaultTimeout)
+	res, err := bs.Execute("echo recovered", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "recovered", resp.Stdout)
-	assert.Equal(t, 0, resp.ExitCode)
-	assert.Contains(t, resp.Stderr, "session state was reset")
-	assert.True(t, bs.Alive(), "should report alive after respawn")
+	assert.Equal(t, "recovered", res.Stdout)
+	assert.Equal(t, 0, res.ExitCode)
+	assert.Contains(t, res.Stderr, "session state was reset")
+	assert.True(t, bs.IsAlive(), "should report alive after respawn")
 }
 
 func TestSequentialCommands(t *testing.T) {
 	bs := newTestSession(t)
 
 	for range 5 {
-		resp, err := bs.Execute("echo ok", DefaultTimeout)
+		res, err := bs.Execute("echo ok", DefaultTimeout)
 		require.NoError(t, err)
-		assert.Equal(t, "ok", resp.Stdout)
-		assert.Equal(t, 0, resp.ExitCode)
+		assert.Equal(t, "ok", res.Stdout)
+		assert.Equal(t, 0, res.ExitCode)
 	}
 }
 
 func TestPipesAndRedirects(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo 'a b c' | tr ' ' '\\n' | sort -r", DefaultTimeout)
+	res, err := bs.Execute("echo 'a b c' | tr ' ' '\\n' | sort -r", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "c\nb\na", resp.Stdout)
-	assert.Equal(t, 0, resp.ExitCode)
+	assert.Equal(t, "c\nb\na", res.Stdout)
+	assert.Equal(t, 0, res.ExitCode)
 }
 
 func TestEmptyCommand(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("", DefaultTimeout)
+	res, err := bs.Execute("", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, 0, resp.ExitCode)
+	assert.Equal(t, 0, res.ExitCode)
 }
 
 func TestMixedStdoutStderr(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo out1; echo err1 >&2; echo out2", DefaultTimeout)
+	res, err := bs.Execute("echo out1; echo err1 >&2; echo out2", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "out1\nout2", resp.Stdout)
-	assert.Contains(t, resp.Stderr, "err1")
-	assert.Equal(t, 0, resp.ExitCode)
+	assert.Equal(t, "out1\nout2", res.Stdout)
+	assert.Contains(t, res.Stderr, "err1")
+	assert.Equal(t, 0, res.ExitCode)
 }
 
 func TestCloseSession(t *testing.T) {
-	bs, err := NewBashSession()
+	bs, err := NewBashSession(NewDefaultBashConfig())
 	require.NoError(t, err)
 
-	assert.True(t, bs.Alive())
+	assert.True(t, bs.IsAlive())
 	require.NoError(t, bs.Close())
-	assert.False(t, bs.Alive())
+	assert.False(t, bs.IsAlive())
+}
+
+func TestCloseIsIdempotent(t *testing.T) {
+	bs, err := NewBashSession(NewDefaultBashConfig())
+	require.NoError(t, err)
+
+	require.NoError(t, bs.Close())
+	require.NoError(t, bs.Close())
+	assert.False(t, bs.IsAlive())
 }
 
 func TestDelimiterInOutput(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo '__SANDBOX_fake__'", DefaultTimeout)
+	res, err := bs.Execute("echo '__SANDBOX_fake__'", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "__SANDBOX_fake__", resp.Stdout)
-	assert.Equal(t, 0, resp.ExitCode)
+	assert.Equal(t, "__SANDBOX_fake__", res.Stdout)
+	assert.Equal(t, 0, res.ExitCode)
 }
 
 func TestStdinIsolation(t *testing.T) {
 	bs := newTestSession(t)
 
 	t.Run("cat without args does not hang", func(t *testing.T) {
-		resp, err := bs.Execute("cat </dev/null; echo done", 5*time.Second)
+		res, err := bs.Execute("cat </dev/null; echo done", 5*time.Second)
 		require.NoError(t, err)
-		assert.Contains(t, resp.Stdout, "done")
-		assert.Equal(t, 0, resp.ExitCode)
+		assert.Contains(t, res.Stdout, "done")
+		assert.Equal(t, 0, res.ExitCode)
 	})
 
 	t.Run("read builtin gets empty input", func(t *testing.T) {
-		resp, err := bs.Execute("read -t 1 line; echo \"got: '$line'\"", 5*time.Second)
+		res, err := bs.Execute("read -t 1 line; echo \"got: '$line'\"", 5*time.Second)
 		require.NoError(t, err)
-		assert.Contains(t, resp.Stdout, "got:")
+		assert.Contains(t, res.Stdout, "got:")
 	})
 
 	t.Run("session survives after stdin-consuming commands", func(t *testing.T) {
-		resp, err := bs.Execute("echo still_alive", DefaultTimeout)
+		res, err := bs.Execute("echo still_alive", DefaultTimeout)
 		require.NoError(t, err)
-		assert.Equal(t, "still_alive", resp.Stdout)
+		assert.Equal(t, "still_alive", res.Stdout)
 	})
 }
 
 func TestIdleCrashRecovery(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo before_crash", DefaultTimeout)
+	res, err := bs.Execute("echo before_crash", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "before_crash", resp.Stdout)
+	assert.Equal(t, "before_crash", res.Stdout)
 
-	// Kill process without setting alive=false — simulates crash while idle
 	bs.mu.Lock()
 	if err := bs.cmd.Process.Kill(); err != nil {
 		bs.mu.Unlock()
@@ -248,18 +256,18 @@ func TestIdleCrashRecovery(t *testing.T) {
 	bs.cmd.Wait() //nolint:errcheck
 	bs.mu.Unlock()
 
-	resp, err = bs.Execute("echo after_crash", DefaultTimeout)
+	res, err = bs.Execute("echo after_crash", DefaultTimeout)
 	require.NoError(t, err)
-	assert.Equal(t, "after_crash", resp.Stdout)
-	assert.Contains(t, resp.Stderr, "session state was reset")
+	assert.Equal(t, "after_crash", res.Stdout)
+	assert.Contains(t, res.Stderr, "session state was reset")
 }
 
 func TestTimeoutPreservesPartialOutput(t *testing.T) {
 	bs := newTestSession(t)
 
-	resp, err := bs.Execute("echo partial_line; sleep 30", 1*time.Second)
+	res, err := bs.Execute("echo partial_line; sleep 30", 1*time.Second)
 	require.NoError(t, err)
-	assert.Equal(t, 137, resp.ExitCode)
-	assert.Contains(t, resp.Stderr, "command timed out")
-	assert.Contains(t, resp.Stdout, "partial_line")
+	assert.Equal(t, 137, res.ExitCode)
+	assert.Contains(t, res.Stderr, "command timed out")
+	assert.Contains(t, res.Stdout, "partial_line")
 }
