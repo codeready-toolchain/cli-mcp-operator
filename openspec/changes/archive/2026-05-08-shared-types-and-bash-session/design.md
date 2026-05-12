@@ -36,19 +36,18 @@ Use `os/exec` with `StdinPipe()`, `StdoutPipe()`, `StderrPipe()` instead of a ps
 **Alternative considered:** PTY-based session
 - Rejected because PTY merges stdout/stderr, adds ANSI escape sequences, and requires external dependencies — complexity with no benefit for LLM consumption
 
-### Decision 2: Concurrent pipe readers with shared buffers
-Use two goroutines writing to `strings.Builder` buffers, synchronized with `sync.WaitGroup`.
+### Decision 2: Concurrent pipe readers, batch-first with streaming-ready internals
+Use two goroutines reading stdout/stderr line-by-line, accumulating results for the batch `Execute()` API.
 
 **Rationale:**
 - Avoids pipe buffer deadlocks that occur with sequential reads (a command writing heavily to stderr blocks while we wait for stdout)
-- Simpler than channel-based approach — just accumulate into buffers
-- No streaming needed since we return the full response at the end
+- Batch `Execute()` is the right first API — the immediate consumer (HTTP handler in SANDBOX-1807) returns a complete JSON `ExecResponse`, and TARSy currently consumes MCP tool results as a single `CallToolResult`
+- The internal pipe readers are inherently incremental (line-by-line), so adding a streaming `ExecuteStream()` variant later is additive (~30-40 lines) without refactoring `Execute()` or the reader goroutines
 
 **Alternative considered:** Sequential read (stdout first, then stderr)
 - Rejected due to pipe buffer deadlock risk
 
-**Alternative considered:** Channel-based concurrent readers
-- Rejected — adds ~15-20 lines of complexity (custom result types, channel coordination) for zero functional benefit
+**Streaming extension path:** When TARSy and the MCP SDK add support for partial tool results or progress notifications, an `ExecuteStream()` method can be layered on top of the same pipe reader goroutines by emitting chunks via a callback instead of accumulating into buffers. This does not require changing the batch `Execute()` contract or the delimiter protocol. See the "Future Extension" section in the persistent-bash-session spec for the sketched API shape.
 
 ### Decision 3: SIGKILL to process group with 5-second hard deadline
 On timeout, send SIGKILL to the command's process group. Wait up to 5 seconds for exit. If process won't die, mark session dead and trigger crash recovery on next call.

@@ -163,3 +163,37 @@ The bash process SHALL be started with `SysProcAttr{Setpgid: true}` so that SIGK
 #### Scenario: Process group is set on bash
 - **WHEN** NewBashSession creates the bash process
 - **THEN** `cmd.SysProcAttr` SHALL have `Setpgid: true`
+
+---
+
+## Future Extension: Streaming Execution
+
+This section sketches the streaming API shape for when TARSy and the MCP SDK add support for partial tool results or progress notifications. This is **not** a requirement for SANDBOX-1806 — it documents the extension point.
+
+### Sketched API
+
+`ExecuteStream(command string, timeout time.Duration, callback func(StreamChunk)) (*ExecResult, error)`
+
+Where `StreamChunk` is:
+
+```go
+type StreamChunk struct {
+    Source string // "stdout" or "stderr"
+    Data   string // one or more lines of output
+}
+```
+
+### Behavior outline
+
+- The callback SHALL be invoked as output lines become available from the pipe readers, before the command completes
+- On normal completion, `ExecuteStream` SHALL return a final `*ExecResult` with the complete `Stdout`, `Stderr`, `ExitCode`, and `Duration` (same contract as `Execute()`)
+- Delimiter protocol lines (start/end/exit markers) SHALL NOT be emitted to the callback
+- The batch `Execute()` API SHALL remain unchanged — `ExecuteStream` is an additive method, not a replacement
+- The internal pipe reader goroutines and delimiter protocol are shared between `Execute()` and `ExecuteStream()` — no architectural changes to the session core
+
+### Open design questions (to be resolved when a consumer drives requirements)
+
+- **Callback error handling:** Should the callback return an error to signal early abort?
+- **Chunk granularity:** Per-line, per-read-buffer, or configurable?
+- **Crash/timeout mid-stream:** How to signal infrastructure failures after chunks have already been delivered — error return, error chunk, or both?
+- **Backpressure:** If the callback is slow, should the pipe readers buffer or block?
