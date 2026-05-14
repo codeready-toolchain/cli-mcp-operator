@@ -132,9 +132,9 @@ func TestDatabaseOperation(t *testing.T) {
 	
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Each subtest gets fresh data
-			tx, _ := db.Begin()
-			t.Cleanup(func() { tx.Rollback() })
+			tx, err := db.Begin()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = tx.Rollback() })
 			
 			// Use tx for test operations
 			// ...
@@ -238,7 +238,8 @@ func (m *mockSessionRepo) GetByID(ctx context.Context, id string) (*Session, err
 ```go
 func TestSessionService_CreateSession(t *testing.T) {
 	// Setup test database with cleanup
-	client, _ := test.SetupTestDatabase(t)
+	client, err := test.SetupTestDatabase(t)
+	require.NoError(t, err)
 	service := services.NewSessionService(client)
 	
 	tests := []struct {

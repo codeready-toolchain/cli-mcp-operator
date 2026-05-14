@@ -53,8 +53,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 ```go
 func (s *SessionService) CreateSession(ctx context.Context, req CreateSessionRequest) (*ent.AlertSession, error) {
-	writeCtx, cancel := context.WithTimeoutCause(
-		context.Background(), 5*time.Second,
+	writeCtx, cancel := context.WithTimeoutCause(ctx, 5*time.Second,
 		fmt.Errorf("create session %s: db write timed out", req.SessionID),
 	)
 	defer cancel()
@@ -80,10 +79,10 @@ func (s *SessionService) CreateSession(ctx context.Context, req CreateSessionReq
 }
 ```
 
-**Why background context for database operations:**
-- HTTP request context might be cancelled if client disconnects
-- Database writes should complete even if client disconnects
-- Use separate timeout to prevent hanging forever
+**Context strategy for database operations:**
+- By default, derive a bounded context from the request context to preserve cancellation and upstream deadlines: `context.WithTimeoutCause(httpCtx, 5*time.Second, cause)`
+- This ensures caller deadlines and cancellation signals propagate to the database layer
+- Detach to `context.Background()` only for explicitly designed background workflows (fire-and-forget patterns, queued jobs, cleanup routines) where upstream cancellation should be intentionally ignored
 
 ## Context Timeout Patterns
 
@@ -255,10 +254,10 @@ func WatchResource(ctx context.Context, res *Resource) {
 
 **DO:**
 - Always pass context as first parameter
-- Use `context.Background()` as root context
+- Use `context.Background()` as root context only at program boundaries (main, init, top-level background jobs)
 - Use `WithTimeoutCause`/`WithCancelCause`/`WithDeadlineCause` — always attach a cause
 - Use `context.Cause(ctx)` to retrieve the cause on cancellation
-- Use background context with timeout for database writes that should complete
+- Derive bounded contexts from the caller's context for request-scoped operations (including DB writes)
 - Check `ctx.Done()` in long-running loops
 - Propagate context through call chains
 
@@ -275,18 +274,16 @@ func WatchResource(ctx context.Context, res *Resource) {
 ```go
 // HTTP Handler
 func (h *Handler) CreateSession(w http.ResponseWriter, r *http.Request) {
-	// Use request context for coordination
 	ctx := r.Context()
 	
-	// Service uses background context for database
+	// Service derives bounded context from request context
 	session, err := h.sessionService.CreateSession(ctx, req)
 	// ...
 }
 
-// Service Layer
-func (s *SessionService) CreateSession(httpCtx context.Context, req CreateSessionRequest) (*ent.AlertSession, error) {
-	writeCtx, cancel := context.WithTimeoutCause(
-		context.Background(), 5*time.Second,
+// Service Layer — request-scoped write (derives from caller's context)
+func (s *SessionService) CreateSession(ctx context.Context, req CreateSessionRequest) (*ent.AlertSession, error) {
+	writeCtx, cancel := context.WithTimeoutCause(ctx, 5*time.Second,
 		fmt.Errorf("create session: db write timed out"),
 	)
 	defer cancel()
@@ -317,13 +314,12 @@ func (s *SessionService) CleanupOldSessions(ctx context.Context) error {
 
 ## Transaction Context Guidelines
 
-**Standard pattern for TARSy services:**
+**Standard pattern for request-scoped writes:**
 
 ```go
-func (s *Service) WriteOperation(httpCtx context.Context, data Data) error {
-	// 1. Create background context with timeout+cause for reliability and diagnostics
-	writeCtx, cancel := context.WithTimeoutCause(
-		context.Background(), 5*time.Second,
+func (s *Service) WriteOperation(ctx context.Context, data Data) error {
+	// 1. Derive bounded context from caller to preserve cancellation and deadlines
+	writeCtx, cancel := context.WithTimeoutCause(ctx, 5*time.Second,
 		fmt.Errorf("write operation: db timed out"),
 	)
 	defer cancel()

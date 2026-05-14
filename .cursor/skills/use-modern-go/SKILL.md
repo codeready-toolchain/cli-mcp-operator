@@ -7,11 +7,11 @@ description: Apply modern Go syntax guidelines based on project's Go version. Us
 
 ## Detected Go Version
 
-!`grep -rh "^go " --include="go.mod" . 2>/dev/null | cut -d' ' -f2 | sort | uniq -c | sort -nr | head -1 | xargs | cut -d' ' -f2 | grep . || echo unknown`
+!`awk '/^go /{print $2; exit}' go.mod 2>/dev/null || grep -rh "^go " --include="go.mod" . 2>/dev/null | cut -d' ' -f2 | sort | uniq -c | sort -nr | head -1 | xargs | cut -d' ' -f2 | grep . || echo unknown`
 
 ## How to Use This Skill
 
-DO NOT search for go.mod files or try to detect the version yourself. Use ONLY the version shown above.
+DO NOT search for go.mod files or try to detect the version yourself. Use ONLY the version shown above. The detection prefers the root `go.mod`; it only falls back to scanning nested modules if no root `go.mod` exists.
 
 **If version detected (not "unknown"):**
 - Say: "This project is using Go X.XX, so I’ll stick to modern Go best practices and freely use language features up to and including this version. If you’d prefer a different target version, just let me know."
@@ -143,7 +143,7 @@ for k := range maps.Keys(m) { process(k) } // iterate directly
 
 **time package**
 
-- `time.Tick`: Use `time.Tick` freely — as of Go 1.23, the garbage collector can recover unreferenced tickers, even if they haven't been stopped. The Stop method is no longer necessary to help the garbage collector. There is no longer any reason to prefer NewTicker when Tick will do.
+- `time.Tick`: As of Go 1.23, the garbage collector can recover unreferenced tickers even if they haven't been stopped, so `time.Tick` is safe for tickers that run until process shutdown. However, use `time.NewTicker` when you need explicit lifecycle control — call `Stop()` for early termination, cleanup, or deterministic shutdown in long-running servers or managed goroutines.
 
 ### Go 1.24+
 
