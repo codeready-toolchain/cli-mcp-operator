@@ -440,6 +440,14 @@ Sandbox pod network rules:
 - **Egress:** only to K8s API server CIDR on port 6443, plus kube-dns (port 53 UDP/TCP)
 - No internet access, no lateral movement
 
+### 3.3.1 -- Workload-Analyzer Coordination
+
+Sandbox pods carry the `tarsy.redhat.com/component: cli-mcp-sandbox` label. Coordinate with the workload-analyzer team to whitelist this label so that investigation commands running inside sandbox pods are not flagged as false positive abuse alerts.
+
+**Context:** The LLM has full bash access in the sandbox pod. Investigation commands may contain security-related keywords (e.g., searching for `xmrig` or `miner` patterns) that trigger the workload-analyzer's command-line rules. Unlike `mcp-server-devsandbox` (which exec's into user containers), the cli-mcp-server runs commands in its own sandbox pods and the investigation SA has no `pods/exec` permission — so the architecture already avoids the core problem. However, if the workload-analyzer monitors the `tarsy` namespace, sandbox pod labels should be used to skip command-line scanning on trusted infrastructure pods.
+
+See [SANDBOX-1841](https://redhat.atlassian.net/browse/SANDBOX-1841) for the broader investigation into smarter process rules.
+
 ### 3.4 -- TARSy Integration (separate PRs to `tarsy` repo)
 
 **PR 1: `custom_headers` in TransportConfig**

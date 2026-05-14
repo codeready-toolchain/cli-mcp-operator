@@ -211,6 +211,9 @@ As a developer I want production-ready Kubernetes manifests so that the server a
 - MCP server SA: pods (create/delete/get/list/watch/patch) + secrets (create/delete) + `system:auth-delegator`
 - Investigation SA: `view` + `list-nodes` + `kube-investigation-readonly` — explicitly no `pods/exec` or KubeVirt permissions
 - Sandbox pod NetworkPolicy: ingress only from `app: cli-mcp-server` on 8090; egress only to K8s API (6443) + kube-dns (53); no internet
+- Sandbox pods must carry the `tarsy.redhat.com/component: cli-mcp-sandbox` label — coordinate with the workload-analyzer team to whitelist this label so that investigation commands (which may contain security-related keywords like `xmrig`, `miner`, etc.) are not flagged as false positive abuse alerts (see [SANDBOX-1841](https://redhat.atlassian.net/browse/SANDBOX-1841))
+
+**Note — workload-analyzer false positives:** The cli-mcp-server architecture avoids exec-ing into user containers (the sandbox agent runs commands in its own pod, and the investigation SA has no `pods/exec` permission). However, because the LLM has full bash access, investigation commands may contain security-related keywords that trigger the workload-analyzer's command-line rules. The sandbox pod labels should be used by the workload-analyzer to recognize these pods as trusted infrastructure and skip command-line scanning. This was identified after a false positive incident where `mcp-server-devsandbox`'s `podFind` tool triggered an abuser alert by running `find -name '*xmrig*'` inside a user container (see [SANDBOX-1841](https://redhat.atlassian.net/browse/SANDBOX-1841) for the broader investigation into smarter process rules).
 
 **Depends on:** SANDBOX-1815
 
