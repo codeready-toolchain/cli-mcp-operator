@@ -1,5 +1,5 @@
 include ./make/*.mk
-.PHONY: build build-server build-agent run test clean fmt lint deps build-prod help
+.PHONY: build build-server build-agent run test clean fmt lint deps build-prod help image-agent
 
 # Application name
 APP_NAME = cli-mcp-server
@@ -82,6 +82,9 @@ build-prod-agent:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=linux $(GOBUILD) -a -installsuffix cgo -ldflags '$(LDFLAGS) -extldflags "-static"' -o $(BUILD_DIR)/agent ./cmd/agent
 
+image-agent:
+	podman build -f Containerfile.agent -t cli-mcp-sandbox:latest .
+
 # Help
 help:
 	@echo "Available targets:"
@@ -98,4 +101,5 @@ help:
 	@echo "  build-prod       - Build both binaries for production"
 	@echo "  build-prod-server- Build server for production"
 	@echo "  build-prod-agent - Build agent for production"
+	@echo "  image-agent      - Build sandbox agent container image"
 	@echo "  help             - Show this help"
