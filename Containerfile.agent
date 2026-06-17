@@ -1,0 +1,44 @@
+FROM mirror.gcr.io/library/golang:1.24-alpine AS go-builder
+RUN apk add --no-cache git make
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG GIT_COMMIT=dev
+ARG BUILD_TIME=unknown
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-X github.com/codeready-toolchain/cli-mcp-server/pkg/version.commitOverride=${GIT_COMMIT} -X github.com/codeready-toolchain/cli-mcp-server/pkg/version.BuildTime=${BUILD_TIME}" \
+    -o bin/sandbox-agent ./cmd/agent/
+
+FROM quay.io/codeready-toolchain/oc-client-base-minimal:latest
+
+# Agent binary
+COPY --from=go-builder /workspace/bin/sandbox-agent /usr/bin/
+
+# Unix utilities for investigation (curl-minimal is already in the base image)
+RUN microdnf install -y jq && microdnf clean all
+
+# yq is not packaged in UBI; install the upstream binary
+ARG TARGETARCH=amd64
+ARG YQ_VERSION=v4.44.6
+RUN case "${TARGETARCH}" in \
+      amd64) YQ_ARCH=amd64 ;; \
+      arm64) YQ_ARCH=arm64 ;; \
+      *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac && \
+    YQ_BASE="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}" && \
+    curl -fsSL "${YQ_BASE}/yq_linux_${YQ_ARCH}" -o /usr/bin/yq && \
+    curl -fsSL "${YQ_BASE}/checksums-bsd" -o /tmp/checksums-bsd && \
+    grep "^SHA-256 (yq_linux_${YQ_ARCH})" /tmp/checksums-bsd | awk -F'= ' '{print $2 "  /usr/bin/yq"}' | sha256sum -c - && \
+    chmod +x /usr/bin/yq && \
+    rm -f /tmp/checksums-bsd
+
+# Non-root user
+RUN groupadd -g 1001 sandbox \
+    && useradd -u 1001 -g 1001 -r -s /bin/bash -d /workspace sandbox \
+    && mkdir -p /workspace && chown -R 1001:1001 /workspace
+
+USER 1001
+WORKDIR /workspace
+EXPOSE 8090
+ENTRYPOINT ["/usr/bin/sandbox-agent"]
