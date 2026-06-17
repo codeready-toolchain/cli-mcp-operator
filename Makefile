@@ -83,7 +83,10 @@ build-prod-agent:
 	CGO_ENABLED=0 GOOS=linux $(GOBUILD) -a -installsuffix cgo -ldflags '$(LDFLAGS) -extldflags "-static"' -o $(BUILD_DIR)/agent ./cmd/agent
 
 image-agent:
-	podman build -f Containerfile.agent -t cli-mcp-sandbox:latest .
+	podman build -f Containerfile.agent \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT_ID) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t cli-mcp-sandbox:latest .
 
 # Help
 help:
