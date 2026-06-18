@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,7 +24,7 @@ func TestHandleHealth(t *testing.T) {
 	t.Run("returns 200 when bash is alive", func(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
-		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 		rec := httptest.NewRecorder()
 
 		// when
@@ -40,7 +41,7 @@ func TestHandleHealth(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
 		require.NoError(t, h.session.Close())
-		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 		rec := httptest.NewRecorder()
 
 		// when
@@ -59,7 +60,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "")
 		body, _ := json.Marshal(agent.ExecRequest{Command: "echo hi"})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer anything")
 		rec := httptest.NewRecorder()
 
@@ -77,7 +78,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
 		body, _ := json.Marshal(agent.ExecRequest{Command: "echo hi"})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 
 		// when
@@ -94,7 +95,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
 		body, _ := json.Marshal(agent.ExecRequest{Command: "echo hi"})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 		rec := httptest.NewRecorder()
 
@@ -109,7 +110,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "correct-secret")
 		body, _ := json.Marshal(agent.ExecRequest{Command: "echo hi"})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer wrong-secret")
 		rec := httptest.NewRecorder()
 
@@ -126,7 +127,7 @@ func TestHandleExec(t *testing.T) {
 	t.Run("rejects invalid request body", func(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader([]byte("not json")))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader([]byte("not json")))
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
 
@@ -144,7 +145,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
 		body, _ := json.Marshal(agent.ExecRequest{Command: ""})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
 
@@ -162,7 +163,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
 		body, _ := json.Marshal(agent.ExecRequest{Command: "echo hello_handler"})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
 
@@ -182,7 +183,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
 		body, _ := json.Marshal(agent.ExecRequest{Command: "(exit 42)"})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
 
@@ -200,7 +201,7 @@ func TestHandleExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")
 		body, _ := json.Marshal(agent.ExecRequest{Command: "echo oops >&2"})
-		req := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
 
@@ -220,7 +221,7 @@ func TestHandleAssign(t *testing.T) {
 		// given
 		h := newTestHandler(t, "")
 		body, _ := json.Marshal(agent.AssignRequest{Token: "new-token"})
-		req := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 
 		// when
@@ -236,7 +237,7 @@ func TestHandleAssign(t *testing.T) {
 		// given
 		h := newTestHandler(t, "existing-token")
 		body, _ := json.Marshal(agent.AssignRequest{Token: "another-token"})
-		req := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 
 		// when
@@ -253,13 +254,13 @@ func TestHandleAssign(t *testing.T) {
 		// given
 		h := newTestHandler(t, "")
 		body1, _ := json.Marshal(agent.AssignRequest{Token: "first-token"})
-		req1 := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader(body1))
+		req1 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader(body1))
 		rec1 := httptest.NewRecorder()
 		h.HandleAssign(rec1, req1)
 		require.Equal(t, http.StatusOK, rec1.Code)
 
 		body2, _ := json.Marshal(agent.AssignRequest{Token: "second-token"})
-		req2 := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader(body2))
+		req2 := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader(body2))
 		rec2 := httptest.NewRecorder()
 
 		// when
@@ -273,7 +274,7 @@ func TestHandleAssign(t *testing.T) {
 	t.Run("rejects invalid request body", func(t *testing.T) {
 		// given
 		h := newTestHandler(t, "")
-		req := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader([]byte("bad")))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader([]byte("bad")))
 		rec := httptest.NewRecorder()
 
 		// when
@@ -290,7 +291,7 @@ func TestHandleAssign(t *testing.T) {
 		// given
 		h := newTestHandler(t, "")
 		body, _ := json.Marshal(agent.AssignRequest{Token: ""})
-		req := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 
 		// when
@@ -309,13 +310,13 @@ func TestAssignThenExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "")
 		assignBody, _ := json.Marshal(agent.AssignRequest{Token: "dynamic-token"})
-		assignReq := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader(assignBody))
+		assignReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader(assignBody))
 		assignRec := httptest.NewRecorder()
 		h.HandleAssign(assignRec, assignReq)
 		require.Equal(t, http.StatusOK, assignRec.Code)
 
 		execBody, _ := json.Marshal(agent.ExecRequest{Command: "echo from_warm_pool"})
-		execReq := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(execBody))
+		execReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(execBody))
 		execReq.Header.Set("Authorization", "Bearer dynamic-token")
 		execRec := httptest.NewRecorder()
 
@@ -334,13 +335,13 @@ func TestAssignThenExec(t *testing.T) {
 		// given
 		h := newTestHandler(t, "")
 		assignBody, _ := json.Marshal(agent.AssignRequest{Token: "correct-token"})
-		assignReq := httptest.NewRequest(http.MethodPost, "/assign", bytes.NewReader(assignBody))
+		assignReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/assign", bytes.NewReader(assignBody))
 		assignRec := httptest.NewRecorder()
 		h.HandleAssign(assignRec, assignReq)
 		require.Equal(t, http.StatusOK, assignRec.Code)
 
 		execBody, _ := json.Marshal(agent.ExecRequest{Command: "echo should_fail"})
-		execReq := httptest.NewRequest(http.MethodPost, "/exec", bytes.NewReader(execBody))
+		execReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/exec", bytes.NewReader(execBody))
 		execReq.Header.Set("Authorization", "Bearer wrong-token")
 		execRec := httptest.NewRecorder()
 
