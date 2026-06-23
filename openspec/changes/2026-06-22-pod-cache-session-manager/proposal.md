@@ -20,7 +20,7 @@ SANDBOX-1806/1807 delivered the sandbox agent (persistent bash + HTTP handlers).
   - `GetOrCreatePod(ctx, sessionID)` — cache → label lookup → create pod + auth Secret → wait for ready
   - `ExecuteCommand(ctx, sessionID, command, timeout)` — resolve pod, HMAC-SHA256 bearer token, POST to agent, update last-activity annotation
   - `CleanupSession(ctx, sessionID)` — delete pod + Secret, clear cache
-  - `CleanupStale(ctx)` — iterate sandbox pods, delete those idle longer than IdleTimeout
+  - `CleanupStale(ctx)` — iterate sandbox pods, delete those idle longer than IdleTimeout (delegates to `CleanupSession`, which removes both the pod and the matching auth Secret)
   - `buildPodSpec(sessionID)` — full pod manifest with security context, readiness probe, volumes, labels, annotations
   - `buildAuthSecret(sessionID, token)` — per-session Secret for HMAC token delivery
   - `computeToken(sessionID)` — HMAC-SHA256(HMACKey, sessionID) deterministic token derivation

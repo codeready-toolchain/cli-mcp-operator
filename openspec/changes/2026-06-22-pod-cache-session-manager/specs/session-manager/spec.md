@@ -13,9 +13,21 @@ The `SandboxConfig` struct SHALL hold all configurable parameters for sandbox po
 - **AND** ServiceAccountName SHALL be "cli-mcp-investigation-sa"
 - **AND** KubeconfigSecret SHALL be "cli-mcp-investigation-kubeconfig"
 
+### Requirement: Session IDs are validated before use in Kubernetes resource names
+
+Session IDs are interpolated into Kubernetes resource names (pod names, Secret names) and label values. They MUST be validated or normalized before use to ensure compatibility with Kubernetes naming rules.
+
+#### Scenario: Valid session ID is accepted
+- **WHEN** a session ID matches the pattern `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (RFC 1123 DNS label)
+- **THEN** it SHALL be accepted and used directly in resource names
+
+#### Scenario: Invalid session ID is rejected
+- **WHEN** a session ID contains characters outside `[a-z0-9-]`, starts/ends with a hyphen, or exceeds 63 characters
+- **THEN** `GetOrCreatePod` SHALL return a validation error without making any K8s API calls
+
 ### Requirement: GetOrCreatePod resolves or creates a sandbox pod for a session
 
-The `GetOrCreatePod` method SHALL implement a three-tier lookup: cache → label-based K8s API discovery → create new pod.
+The `GetOrCreatePod` method SHALL implement a three-tier lookup: cache → label-based K8s API discovery → idempotent create-or-get new pod (handling `AlreadyExists` conflicts from concurrent replicas).
 
 #### Scenario: Cache hit returns cached pod IP
 - **WHEN** `GetOrCreatePod` is called for a session with a valid cache entry
@@ -23,13 +35,20 @@ The `GetOrCreatePod` method SHALL implement a three-tier lookup: cache → label
 
 #### Scenario: Cache miss triggers label-based discovery
 - **WHEN** `GetOrCreatePod` is called for a session with no cache entry
-- **AND** a Running pod exists with matching session-id label
+- **AND** a Ready pod exists with matching session-id label (PodReady condition is true)
 - **THEN** it SHALL return the pod's IP and cache the result
+- **AND** if multiple matching Ready pods exist, it SHALL select the oldest by creation timestamp for deterministic behavior
 
 #### Scenario: No existing pod triggers creation
 - **WHEN** `GetOrCreatePod` is called for a session with no cache entry
 - **AND** no pod exists with matching session-id label
 - **THEN** it SHALL create an auth Secret, create a sandbox pod, wait for ready, cache the result, and return the pod IP
+
+#### Scenario: Concurrent create is idempotent via conflict handling
+- **WHEN** two replicas simultaneously attempt to create a pod for the same session ID
+- **AND** one replica's K8s create call returns `AlreadyExists`
+- **THEN** the losing replica SHALL fall through to label-based discovery and return the existing pod's IP
+- **AND** no duplicate pods or Secrets SHALL be created
 
 #### Scenario: Pod creation creates auth Secret first
 - **WHEN** a new sandbox pod is created for a session
@@ -87,15 +106,18 @@ The `ExecuteCommand` method SHALL resolve the pod, authenticate with HMAC, POST 
 - **AND** include `Authorization: Bearer <HMAC-token>` header
 - **AND** return the decoded `ExecResponse`
 
+**Trust boundary note:** HTTP (not HTTPS) is used because the MCP server and sandbox agent pods communicate over the Kubernetes pod network within the same cluster. The bearer token guards against unauthorized callers within the cluster network, not against network-level eavesdropping. If cross-cluster or external-network communication is needed in future, this should be upgraded to TLS/mTLS.
+
 #### Scenario: HMAC token derivation is deterministic
 - **WHEN** `computeToken` is called with the same session ID and HMAC key
 - **THEN** it SHALL always return the same hex-encoded HMAC-SHA256 value
 - **AND** different session IDs SHALL produce different tokens
 
 #### Scenario: Agent unreachable invalidates cache
-- **WHEN** the HTTP request to the agent fails (connection error or non-200 status)
+- **WHEN** the HTTP request to the agent fails with a transport-level error (connection refused, timeout, DNS resolution failure, or network unreachable)
 - **THEN** the cache entry SHALL be invalidated for that session and pod IP
 - **AND** an error SHALL be returned
+- **AND** application-level HTTP errors (4xx/5xx responses from a reachable agent) SHALL NOT trigger cache invalidation
 
 #### Scenario: Last-activity annotation is updated in background
 - **WHEN** a command executes successfully
