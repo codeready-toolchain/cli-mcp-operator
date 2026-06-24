@@ -19,7 +19,7 @@
 
 - [ ] 3.1 Create `pkg/session/manager.go` with `SessionManager` struct (clientset, config, cache, httpClient, logger)
 - [ ] 3.2 Implement `NewSessionManager(clientset, config, logger)` — initialize cache and HTTP client
-- [ ] 3.3 Implement `discoverPod(ctx, sessionID)` — list pods by label selector, return IP of first Running pod
+- [ ] 3.3 Implement `discoverPod(ctx, sessionID)` — list pods by label selector, return IP of oldest Ready pod (PodReady condition true, deterministic selection by creation timestamp)
 - [ ] 3.4 Implement `buildPodSpec(sessionID)` — construct Pod manifest with:
   - GenerateName `cli-mcp-sandbox-`
   - Labels: `tarsy.redhat.com/session-id`, `tarsy.redhat.com/component`
@@ -33,12 +33,13 @@
 - [ ] 3.6 Implement `computeToken(sessionID)` — HMAC-SHA256(HMACKey, sessionID), hex-encoded
 - [ ] 3.7 Implement `waitForReady(ctx, podName)` — poll every 2s for up to 60s until Running + PodReady
 - [ ] 3.8 Implement `createSandboxPod(ctx, sessionID)` — create Secret, create Pod, wait for ready
-- [ ] 3.9 Implement `GetOrCreatePod(ctx, sessionID)` — cache hit → label discovery → create new
+- [ ] 3.9 Implement `validateSessionID(sessionID)` — reject IDs not matching RFC 1123 DNS label format (`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+- [ ] 3.10 Implement `GetOrCreatePod(ctx, sessionID)` — validate session ID, then cache hit → label discovery → idempotent create-or-get (handle `AlreadyExists` conflicts)
 
 ## 4. SessionManager — Command Execution
 
 - [ ] 4.1 Implement `ExecuteCommand(ctx, sessionID, command, timeoutSec)` — resolve pod, compute token, POST to agent /exec
-- [ ] 4.2 On HTTP error, call `cache.Invalidate(sessionID, podIP)` before returning error
+- [ ] 4.2 On transport-level error (connection refused, timeout, network unreachable), call `cache.Invalidate(sessionID, podIP)` before returning error — application-level HTTP errors (4xx/5xx) SHALL NOT invalidate cache
 - [ ] 4.3 On success, decode `agent.ExecResponse` from JSON body
 - [ ] 4.4 Launch background `updateLastActivity(sessionID)` goroutine after successful exec
 - [ ] 4.5 Implement `updateLastActivity(sessionID)` — patch pod annotation with current RFC3339 timestamp

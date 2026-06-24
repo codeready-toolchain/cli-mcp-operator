@@ -119,6 +119,12 @@ The `ExecuteCommand` method SHALL resolve the pod, authenticate with HMAC, POST 
 - **AND** an error SHALL be returned
 - **AND** application-level HTTP errors (4xx/5xx responses from a reachable agent) SHALL NOT trigger cache invalidation
 
+#### Scenario: Concurrent commands for the same session are serialized at the agent
+- **WHEN** multiple `ExecuteCommand` calls arrive concurrently for the same session ID
+- **THEN** the session manager SHALL POST each request independently to the agent (no server-side queuing)
+- **AND** the sandbox agent SHALL serialize execution via its bash session mutex — each command runs to completion before the next begins
+- **AND** each queued command's timeout SHALL start when it begins executing, not when the HTTP request was received
+
 #### Scenario: Last-activity annotation is updated in background
 - **WHEN** a command executes successfully
 - **THEN** the pod's `tarsy.redhat.com/last-activity` annotation SHALL be patched with the current UTC timestamp

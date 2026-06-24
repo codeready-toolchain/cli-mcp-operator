@@ -156,6 +156,9 @@ The `CleanupStale` method is called externally (e.g., by a goroutine in `cmd/ser
 **Trade-off:** Manager uses inline `net/http` instead of `pkg/agent/client`
 → **Accepted:** Will be refactored in SANDBOX-1812. Keeps this story self-contained.
 
+**Trade-off:** Concurrent commands for the same session queue at the agent
+→ **Accepted:** The session manager is stateless and POSTs each command independently. The sandbox agent serializes execution via its `BashSession` mutex (single persistent bash process). If N parallel requests arrive, they queue and execute sequentially — no interleaving. This means the Nth request's wall-clock latency includes waiting for the previous N-1 commands. This is the correct behavior for a single bash process; users who need parallelism can use shell-level constructs (`&`, `&&`) within a single command.
+
 **Trade-off:** No retry on pod creation failure
 → **Accepted:** Single attempt returns error to caller. The MCP tool handler will propagate the error to TARSy, which can retry the tool call.
 
