@@ -19,9 +19,9 @@
 
 - [ ] 3.1 Create `pkg/session/manager.go` with `SessionManager` struct (clientset, config, cache, httpClient, logger)
 - [ ] 3.2 Implement `NewSessionManager(clientset, config, logger)` — initialize cache and HTTP client
-- [ ] 3.3 Implement `discoverPod(ctx, sessionID)` — list pods by label selector, return IP of oldest Ready pod (PodReady condition true, deterministic selection by creation timestamp)
+- [ ] 3.3 Implement `discoverPod(ctx, sessionID)` — list pods by label selector, return oldest Ready pod's IP (PodReady condition true, deterministic by creation timestamp). If no Ready pod but a non-terminal pod exists (Pending/Running), wait for it via `waitForReady`. Skip terminal pods (Failed/Succeeded).
 - [ ] 3.4 Implement `buildPodSpec(sessionID)` — construct Pod manifest with:
-  - GenerateName `cli-mcp-sandbox-`
+  - Name `cli-mcp-sandbox-<sessionID>` (deterministic, required for idempotent create-or-get via `AlreadyExists` handling)
   - Labels: `tarsy.redhat.com/session-id`, `tarsy.redhat.com/component`
   - Annotations: `tarsy.redhat.com/created-at`, `tarsy.redhat.com/last-activity`
   - SecurityContext: RunAsNonRoot, RunAsUser 1001, RunAsGroup 1001

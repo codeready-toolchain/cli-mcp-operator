@@ -39,9 +39,16 @@ The `GetOrCreatePod` method SHALL implement a three-tier lookup: cache → label
 - **THEN** it SHALL return the pod's IP and cache the result
 - **AND** if multiple matching Ready pods exist, it SHALL select the oldest by creation timestamp for deterministic behavior
 
+#### Scenario: Cache miss finds non-Ready pod
+- **WHEN** `GetOrCreatePod` is called for a session with no cache entry
+- **AND** a non-terminal pod exists with matching session-id label (Pending or Running, but PodReady is false)
+- **AND** no Ready pod exists for the session
+- **THEN** it SHALL wait for the existing pod to become Ready (reusing `waitForReady` with the 60s deadline)
+- **AND** return the pod's IP and cache the result once Ready
+
 #### Scenario: No existing pod triggers creation
 - **WHEN** `GetOrCreatePod` is called for a session with no cache entry
-- **AND** no pod exists with matching session-id label
+- **AND** no non-terminal pod exists with matching session-id label (either no pods, or only Failed/Succeeded pods)
 - **THEN** it SHALL create an auth Secret, create a sandbox pod, wait for ready, cache the result, and return the pod IP
 
 #### Scenario: Concurrent create is idempotent via conflict handling
