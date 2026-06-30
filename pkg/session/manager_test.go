@@ -25,6 +25,7 @@ const testNamespace = "tarsy"
 func newTestConfig() SandboxConfig {
 	cfg := DefaultConfig()
 	cfg.HMACKey = "test-hmac-key"
+	cfg.Image = "quay.io/codeready-toolchain/cli-mcp-sandbox:v0.1.0-test"
 	cfg.Namespace = testNamespace
 	return cfg
 }
@@ -37,7 +38,9 @@ func newTestManager(t *testing.T, objects ...corev1.Pod) *SessionManager {
 		_, err := client.CoreV1().Pods(testNamespace).Create(ctx, &objects[i], metav1.CreateOptions{})
 		require.NoError(t, err)
 	}
-	return NewSessionManager(client, newTestConfig(), slog.Default())
+	mgr, err := NewSessionManager(client, newTestConfig(), slog.Default())
+	require.NoError(t, err)
+	return mgr
 }
 
 func readyPod(sessionID, ip string, createdAt time.Time) corev1.Pod {
@@ -144,6 +147,37 @@ func TestComputeToken(t *testing.T) {
 
 		// then — SHA-256 = 32 bytes = 64 hex chars
 		assert.Len(t, token, 64)
+	})
+}
+
+func TestNewSessionManagerValidation(t *testing.T) {
+	client := fake.NewSimpleClientset()
+
+	t.Run("rejects empty HMACKey", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.HMACKey = ""
+
+		_, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "HMACKey")
+	})
+
+	t.Run("rejects empty Image", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.Image = ""
+
+		_, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "Image")
+	})
+
+	t.Run("accepts valid config", func(t *testing.T) {
+		mgr, err := NewSessionManager(client, newTestConfig(), slog.Default())
+
+		require.NoError(t, err)
+		assert.NotNil(t, mgr)
 	})
 }
 

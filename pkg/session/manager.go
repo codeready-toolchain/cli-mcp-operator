@@ -54,7 +54,14 @@ type SessionManager struct {
 }
 
 // NewSessionManager creates a SessionManager with a default PodCache and HTTP client.
-func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, logger *slog.Logger) *SessionManager {
+// It returns an error if required config fields (HMACKey, Image) are missing.
+func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, logger *slog.Logger) (*SessionManager, error) {
+	if config.HMACKey == "" {
+		return nil, fmt.Errorf("SandboxConfig.HMACKey must not be empty")
+	}
+	if config.Image == "" {
+		return nil, fmt.Errorf("SandboxConfig.Image must not be empty")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -64,7 +71,7 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 		cache:      NewPodCache(defaultCacheTTL),
 		httpClient: &http.Client{Timeout: 0},
 		logger:     logger,
-	}
+	}, nil
 }
 
 // SetHTTPClient replaces the default HTTP client (useful for testing).
@@ -376,7 +383,8 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 		return nil, fmt.Errorf("marshal exec request: %w", err)
 	}
 
-	url := fmt.Sprintf("http://%s:%d/exec", podIP, m.config.AgentPort)
+	host := net.JoinHostPort(podIP, fmt.Sprintf("%d", m.config.AgentPort))
+	url := fmt.Sprintf("http://%s/exec", host)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create http request: %w", err)
@@ -391,7 +399,7 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 		}
 		return nil, fmt.Errorf("agent request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("agent returned status %d", resp.StatusCode)
@@ -402,7 +410,8 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 		return nil, fmt.Errorf("decode exec response: %w", err)
 	}
 
-	go m.updateLastActivity(sessionID)
+	_, podName, _ := m.cache.Get(sessionID)
+	go m.updateLastActivity(podName)
 
 	return &execResp, nil
 }
@@ -421,11 +430,10 @@ func isTransportError(err error) bool {
 	return errors.As(err, &dnsErr)
 }
 
-func (m *SessionManager) updateLastActivity(sessionID string) {
+func (m *SessionManager) updateLastActivity(podName string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	podName := podNamePrefix + sessionID
 	now := time.Now().UTC().Format(time.RFC3339)
 	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, annotationLastActivity, now)
 
