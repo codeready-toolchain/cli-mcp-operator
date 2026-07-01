@@ -52,11 +52,18 @@ The `ClaimPod` method SHALL claim an unassigned warm pod for a given session usi
 - **THEN** it SHALL return an error indicating pool exhaustion
 - **AND** the caller SHALL fall back to on-demand pod creation
 
+#### Scenario: Auth Secret creation failure rolls back the claim
+- **WHEN** a pod's label is successfully patched (claimed)
+- **AND** the auth Secret `cli-mcp-sandbox-auth-<sessionID>` creation fails
+- **THEN** the claim SHALL be rolled back by removing the `tarsy.redhat.com/session-id` label from the pod
+- **AND** an error SHALL be returned
+
 #### Scenario: Assign call failure rolls back the claim
 - **WHEN** a pod's label is successfully patched (claimed)
-- **AND** the `POST /assign` call to the agent fails
-- **THEN** the claim SHALL be rolled back by removing the session-id label from the pod
-- **AND** the auth Secret SHALL be deleted
+- **AND** the auth Secret is created successfully
+- **AND** the `POST /assign` call to the agent fails (including timeouts, connection refused, and ambiguous network errors)
+- **THEN** the claim SHALL be rolled back by removing the `tarsy.redhat.com/session-id` label from the pod
+- **AND** the auth Secret `cli-mcp-sandbox-auth-<sessionID>` SHALL be deleted
 - **AND** an error SHALL be returned
 
 ### Requirement: Warm pod spec matches on-demand pod spec without session-specific fields
@@ -79,6 +86,12 @@ The `StartReconciler` method SHALL run a background goroutine that reconciles th
 #### Scenario: Periodic reconciliation
 - **WHEN** `StartReconciler` is called
 - **THEN** it SHALL run `ReconcilePool` every `ReconcileInterval` (default 30s) using a ticker
+
+#### Scenario: Invalid ReconcileInterval falls back to default
+- **WHEN** `StartReconciler` is called
+- **AND** `ReconcileInterval` is zero or negative
+- **THEN** it SHALL use the default interval of 30 seconds
+- **AND** it SHALL NOT panic (guarding against `time.NewTicker` with non-positive duration)
 
 #### Scenario: Event-driven reconciliation after claim
 - **WHEN** `TriggerReplenish` is called (after a successful claim)

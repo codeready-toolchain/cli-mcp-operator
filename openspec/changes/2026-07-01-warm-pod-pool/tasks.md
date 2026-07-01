@@ -30,15 +30,16 @@
 - [ ] 5.2 For each unassigned pod: attempt strategic merge patch to add `tarsy.redhat.com/session-id` label using `resourceVersion`
 - [ ] 5.3 On conflict (409), skip to next pod; on success, proceed with assignment
 - [ ] 5.4 Create auth Secret `cli-mcp-sandbox-auth-<sessionID>` with HMAC-derived token
-- [ ] 5.5 Call `POST /assign` on the agent with the HMAC token in request body
-- [ ] 5.6 On assign failure, rollback: remove session-id label from pod, delete auth Secret
-- [ ] 5.7 On success, trigger async replenishment via `TriggerReplenish()`
-- [ ] 5.8 Return claimed pod IP and name
+- [ ] 5.5 On Secret creation failure, rollback: remove session-id label from pod
+- [ ] 5.6 Call `POST /assign` on the agent with the HMAC token in request body
+- [ ] 5.7 On assign failure (including timeouts and connection errors), rollback: remove session-id label from pod, delete auth Secret
+- [ ] 5.8 On success, trigger async replenishment via `TriggerReplenish()`
+- [ ] 5.9 Return claimed pod IP and name
 
 ## 6. WarmPool — Background Reconciler
 
 - [ ] 6.1 Implement `TriggerReplenish()` — non-blocking send to buffered channel
-- [ ] 6.2 Implement `StartReconciler(ctx)` — select on ticker (ReconcileInterval) and replenish channel, call `ReconcilePool` on either signal, exit on context cancellation
+- [ ] 6.2 Implement `StartReconciler(ctx)` — select on ticker (ReconcileInterval) and replenish channel, call `ReconcilePool` on either signal, exit on context cancellation. Guard against non-positive ReconcileInterval by falling back to 30s default.
 
 ## 7. SessionManager Integration
 
@@ -57,8 +58,10 @@
 - [ ] 8.4 Pool tests: `ReconcilePool` cleans up stale unassigned pods
 - [ ] 8.5 Pool tests: `ClaimPod` success (label patch, Secret creation, /assign call)
 - [ ] 8.6 Pool tests: `ClaimPod` handles resourceVersion conflict (retries next pod)
-- [ ] 8.7 Pool tests: `ClaimPod` rolls back on assign failure
-- [ ] 8.8 Pool tests: `ClaimPod` returns error when pool exhausted
-- [ ] 8.9 Manager integration tests: `GetOrCreatePod` claims from pool when available
-- [ ] 8.10 Manager integration tests: `GetOrCreatePod` falls back to on-demand when pool exhausted
-- [ ] 8.11 Manager integration tests: `GetOrCreatePod` unchanged when pool disabled
+- [ ] 8.7 Pool tests: `ClaimPod` rolls back pod label on auth Secret creation failure
+- [ ] 8.8 Pool tests: `ClaimPod` rolls back pod label and deletes Secret on assign failure (timeout, connection error)
+- [ ] 8.9 Pool tests: `ClaimPod` returns error when pool exhausted
+- [ ] 8.10 Pool tests: `StartReconciler` falls back to 30s default on zero/negative ReconcileInterval
+- [ ] 8.11 Manager integration tests: `GetOrCreatePod` claims from pool when available
+- [ ] 8.12 Manager integration tests: `GetOrCreatePod` falls back to on-demand when pool exhausted
+- [ ] 8.13 Manager integration tests: `GetOrCreatePod` unchanged when pool disabled
