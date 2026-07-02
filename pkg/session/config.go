@@ -12,6 +12,7 @@ type SandboxConfig struct {
 	IdleTimeout        time.Duration
 	HMACKey            string
 	WarmPoolSize       int
+	ReconcileInterval  time.Duration
 	Namespace          string
 	ServiceAccountName string
 	KubeconfigSecret   string
@@ -28,6 +29,7 @@ func DefaultConfig() SandboxConfig {
 		MemoryLimit:        "512Mi",
 		IdleTimeout:        30 * time.Minute,
 		WarmPoolSize:       0,
+		ReconcileInterval:  30 * time.Second,
 		Namespace:          "tarsy",
 		ServiceAccountName: "cli-mcp-investigation-sa",
 		KubeconfigSecret:   "cli-mcp-investigation-kubeconfig",

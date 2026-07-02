@@ -49,6 +49,7 @@ type SessionManager struct {
 	clientset  kubernetes.Interface
 	config     SandboxConfig
 	cache      *PodCache
+	pool       *WarmPool
 	httpClient *http.Client
 	logger     *slog.Logger
 }
@@ -65,13 +66,30 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SessionManager{
+	mgr := &SessionManager{
 		clientset:  clientset,
 		config:     config,
 		cache:      NewPodCache(defaultCacheTTL),
 		httpClient: &http.Client{Timeout: 0},
 		logger:     logger,
-	}, nil
+	}
+	if config.WarmPoolSize > 0 {
+		mgr.pool = NewWarmPool(clientset, config, logger)
+	}
+	return mgr, nil
+}
+
+// StartPool starts the warm pool reconciler if the pool is enabled.
+// It should be called once after NewSessionManager during server startup.
+func (m *SessionManager) StartPool(ctx context.Context) {
+	if m.pool != nil {
+		m.pool.StartReconciler(ctx)
+	}
+}
+
+// Pool returns the warm pool (nil when disabled). Exposed for testing.
+func (m *SessionManager) Pool() *WarmPool {
+	return m.pool
 }
 
 // SetHTTPClient replaces the default HTTP client (useful for testing).
@@ -109,6 +127,15 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	if ip != "" {
 		m.cache.Set(sessionID, ip, podName)
 		return ip, nil
+	}
+
+	if m.pool != nil {
+		ip, podName, claimErr := m.pool.ClaimPod(ctx, sessionID)
+		if claimErr == nil {
+			m.cache.Set(sessionID, ip, podName)
+			return ip, nil
+		}
+		m.logger.Warn("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
 	}
 
 	ip, podName, err = m.createSandboxPod(ctx, sessionID)
