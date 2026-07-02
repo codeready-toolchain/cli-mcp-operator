@@ -63,7 +63,10 @@ func unassignedSelector() string {
 	return fmt.Sprintf("%s=%s,!%s", labelComponent, componentValue, labelSessionID)
 }
 
-// listUnassignedPods returns non-terminal unassigned sandbox pods sorted by creation time (oldest first).
+// listUnassignedPods returns all unassigned sandbox pods (including terminal)
+// sorted by creation time (oldest first). Callers must filter terminal pods
+// as appropriate — ReconcilePool needs to see them for stale cleanup, while
+// ClaimPod should skip them.
 func (p *WarmPool) listUnassignedPods(ctx context.Context) ([]corev1.Pod, error) {
 	podList, err := p.clientset.CoreV1().Pods(p.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: unassignedSelector(),
@@ -72,20 +75,16 @@ func (p *WarmPool) listUnassignedPods(ctx context.Context) ([]corev1.Pod, error)
 		return nil, fmt.Errorf("list unassigned pods: %w", err)
 	}
 
-	var pods []corev1.Pod
-	for i := range podList.Items {
-		phase := podList.Items[i].Status.Phase
-		if phase == corev1.PodFailed || phase == corev1.PodSucceeded {
-			continue
-		}
-		pods = append(pods, podList.Items[i])
-	}
-
+	pods := podList.Items
 	sort.Slice(pods, func(i, j int) bool {
 		return pods[i].CreationTimestamp.Before(&pods[j].CreationTimestamp)
 	})
 
 	return pods, nil
+}
+
+func isTerminalPod(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded
 }
 
 // buildWarmPodSpec constructs a Pod manifest for a warm pool pod. It matches
@@ -190,36 +189,46 @@ func (p *WarmPool) ReconcilePool(ctx context.Context) {
 
 	staleThreshold := 2 * p.config.IdleTimeout
 	now := time.Now()
-	var live []corev1.Pod
+	var live int
 
 	for i := range pods {
 		createdAt := pods[i].Annotations[annotationCreatedAt]
 		if createdAt == "" {
-			live = append(live, pods[i])
+			if !isTerminalPod(&pods[i]) {
+				live++
+			}
 			continue
 		}
 		t, parseErr := time.Parse(time.RFC3339, createdAt)
 		if parseErr != nil {
 			p.logger.Warn("reconcile: unparseable created-at annotation", "pod", pods[i].Name, "value", createdAt)
-			live = append(live, pods[i])
+			if !isTerminalPod(&pods[i]) {
+				live++
+			}
 			continue
 		}
 		if now.Sub(t) > staleThreshold {
 			p.logger.Info("reconcile: deleting stale unassigned pod", "pod", pods[i].Name, "age", now.Sub(t))
-			if delErr := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, pods[i].Name, metav1.DeleteOptions{}); delErr != nil && !k8serrors.IsNotFound(delErr) {
-				p.logger.Warn("reconcile: failed to delete stale pod", "pod", pods[i].Name, "error", delErr)
+			if delErr := p.clientset.CoreV1().Pods(p.config.Namespace).Delete(ctx, pods[i].Name, metav1.DeleteOptions{}); delErr != nil {
+				if k8serrors.IsNotFound(delErr) {
+					continue
+				}
+				p.logger.Warn("reconcile: failed to delete stale pod; skipping refill", "pod", pods[i].Name, "error", delErr)
+				return
 			}
 			continue
 		}
-		live = append(live, pods[i])
+		if !isTerminalPod(&pods[i]) {
+			live++
+		}
 	}
 
-	deficit := p.config.WarmPoolSize - len(live)
+	deficit := p.config.WarmPoolSize - live
 	if deficit <= 0 {
 		return
 	}
 
-	p.logger.Info("reconcile: creating warm pods", "current", len(live), "target", p.config.WarmPoolSize, "creating", deficit)
+	p.logger.Info("reconcile: creating warm pods", "current", live, "target", p.config.WarmPoolSize, "creating", deficit)
 	for range deficit {
 		pod := p.buildWarmPodSpec()
 		_, createErr := p.clientset.CoreV1().Pods(p.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
@@ -247,6 +256,9 @@ func (p *WarmPool) ClaimPod(ctx context.Context, sessionID string) (podIP, podNa
 
 	for i := range pods {
 		pod := &pods[i]
+		if isTerminalPod(pod) {
+			continue
+		}
 		ip, name, claimErr := p.tryClaimPod(ctx, pod, sessionID)
 		if claimErr == nil {
 			p.TriggerReplenish()
@@ -278,15 +290,9 @@ func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID s
 	token := computeToken(p.config.HMACKey, sessionID)
 	secret := p.buildAuthSecret(sessionID, token)
 	_, secretErr := p.clientset.CoreV1().Secrets(p.config.Namespace).Create(ctx, secret, metav1.CreateOptions{})
-	if secretErr != nil && !k8serrors.IsAlreadyExists(secretErr) {
+	if secretErr != nil {
 		p.rollbackLabel(ctx, pod.Name)
 		return "", "", fmt.Errorf("create auth secret for claimed pod: %w", secretErr)
-	}
-
-	if assignErr := p.assignToken(ctx, patched, token); assignErr != nil {
-		p.rollbackLabel(ctx, pod.Name)
-		p.bestEffortDeleteSecret(ctx, sessionID)
-		return "", "", fmt.Errorf("assign token to claimed pod: %w", assignErr)
 	}
 
 	ip := patched.Status.PodIP
@@ -297,6 +303,14 @@ func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID s
 			p.bestEffortDeleteSecret(ctx, sessionID)
 			return "", "", fmt.Errorf("wait for pod IP: %w", err)
 		}
+		patched = patched.DeepCopy()
+		patched.Status.PodIP = ip
+	}
+
+	if assignErr := p.assignToken(ctx, patched, token); assignErr != nil {
+		p.rollbackLabel(ctx, pod.Name)
+		p.bestEffortDeleteSecret(ctx, sessionID)
+		return "", "", fmt.Errorf("assign token to claimed pod: %w", assignErr)
 	}
 
 	return ip, patched.Name, nil

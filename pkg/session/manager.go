@@ -135,7 +135,7 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 			m.cache.Set(sessionID, ip, podName)
 			return ip, nil
 		}
-		m.logger.Warn("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
+		m.logger.Info("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
 	}
 
 	ip, podName, err = m.createSandboxPod(ctx, sessionID)

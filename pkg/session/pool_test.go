@@ -279,8 +279,8 @@ func TestClaimPod(t *testing.T) {
 		assert.Contains(t, err.Error(), "warm pool exhausted")
 	})
 
-	t.Run("rolls back label on auth secret creation failure", func(t *testing.T) {
-		// given — pre-create a conflicting secret so the pool's Create fails
+	t.Run("rolls back label on auth secret already exists", func(t *testing.T) {
+		// given — pre-create a conflicting secret so the pool's Create returns AlreadyExists
 		pod := unassignedPod("warm-rollback-1", "127.0.0.1", time.Now())
 		pool := newTestPool(t, pod)
 		ctx := context.Background()
@@ -290,25 +290,22 @@ func TestClaimPod(t *testing.T) {
 				Name:      secretNamePrefix + "session-conflict",
 				Namespace: testNamespace,
 			},
-			StringData: map[string]string{"token": "other"},
+			StringData: map[string]string{"token": "stale-token"},
 		}
 		_, err := pool.clientset.CoreV1().Secrets(testNamespace).Create(ctx, conflictingSecret, metav1.CreateOptions{})
 		require.NoError(t, err)
 
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
-		t.Cleanup(ts.Close)
-		pool.config.AgentPort = agentPortFromURL(t, ts.URL)
-		pool.SetHTTPClient(ts.Client())
+		// when — claim should fail because pre-existing secret is not trusted
+		_, _, err = pool.ClaimPod(ctx, "session-conflict")
 
-		// when — claim should succeed because AlreadyExists is tolerated for secrets
-		ip, name, err := pool.ClaimPod(ctx, "session-conflict")
+		// then — should fail and roll back the label
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "warm pool exhausted")
 
-		// then — should succeed (AlreadyExists on secret is not a failure)
-		require.NoError(t, err)
-		assert.Equal(t, "127.0.0.1", ip)
-		assert.Equal(t, "warm-rollback-1", name)
+		rolledBack, getErr := pool.clientset.CoreV1().Pods(testNamespace).Get(ctx, "warm-rollback-1", metav1.GetOptions{})
+		require.NoError(t, getErr)
+		_, hasSession := rolledBack.Labels[labelSessionID]
+		assert.False(t, hasSession, "session-id label should be removed on rollback")
 	})
 
 	t.Run("rolls back on assign failure", func(t *testing.T) {
@@ -448,19 +445,28 @@ func TestStartReconciler(t *testing.T) {
 		defer cancel()
 
 		pool.StartReconciler(ctx)
-		// wait for initial reconciliation
+		// wait for initial reconciliation to fill pool to 3
 		time.Sleep(200 * time.Millisecond)
 
-		// when — trigger replenish
-		pool.TriggerReplenish()
-		time.Sleep(200 * time.Millisecond)
-
-		// then — should have 3 pods
+		// given — delete one pod to create a deficit
 		pods, err := pool.clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
 			LabelSelector: unassignedSelector(),
 		})
 		require.NoError(t, err)
-		assert.GreaterOrEqual(t, len(pods.Items), 3)
+		require.NotEmpty(t, pods.Items)
+		err = pool.clientset.CoreV1().Pods(testNamespace).Delete(ctx, pods.Items[0].Name, metav1.DeleteOptions{})
+		require.NoError(t, err)
+
+		// when — trigger replenish to fill the deficit
+		pool.TriggerReplenish()
+		time.Sleep(200 * time.Millisecond)
+
+		// then — should be back to 3 pods
+		pods, err = pool.clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
+			LabelSelector: unassignedSelector(),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 3, len(pods.Items))
 	})
 
 	t.Run("exits on context cancellation", func(t *testing.T) {
