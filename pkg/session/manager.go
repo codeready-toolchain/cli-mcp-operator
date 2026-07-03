@@ -215,7 +215,12 @@ func isPodReady(pod *corev1.Pod) bool {
 	return false
 }
 
-func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
+// buildBasePodSpec constructs the shared sandbox pod spec used by both
+// on-demand creation and warm pool pre-creation. It includes the component
+// label, created-at annotation, security context, readiness probe, volumes,
+// and base env vars. Callers add session-specific fields (name, session-id
+// label, SANDBOX_AUTH_TOKEN env var) as needed.
+func buildBasePodSpec(config SandboxConfig) *corev1.Pod {
 	now := time.Now().UTC().Format(time.RFC3339)
 	runAsNonRoot := true
 	var runAsUser int64 = 1001
@@ -224,19 +229,16 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      podNamePrefix + sessionID,
-			Namespace: m.config.Namespace,
+			Namespace: config.Namespace,
 			Labels: map[string]string{
-				labelSessionID: sessionID,
 				labelComponent: componentValue,
 			},
 			Annotations: map[string]string{
-				annotationCreatedAt:    now,
-				annotationLastActivity: now,
+				annotationCreatedAt: now,
 			},
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: m.config.ServiceAccountName,
+			ServiceAccountName: config.ServiceAccountName,
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: &runAsNonRoot,
 				RunAsUser:    &runAsUser,
@@ -245,22 +247,22 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 			Containers: []corev1.Container{
 				{
 					Name:  "sandbox",
-					Image: m.config.Image,
+					Image: config.Image,
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(m.config.CPURequest),
-							corev1.ResourceMemory: resource.MustParse(m.config.MemoryRequest),
+							corev1.ResourceCPU:    resource.MustParse(config.CPURequest),
+							corev1.ResourceMemory: resource.MustParse(config.MemoryRequest),
 						},
 						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(m.config.CPULimit),
-							corev1.ResourceMemory: resource.MustParse(m.config.MemoryLimit),
+							corev1.ResourceCPU:    resource.MustParse(config.CPULimit),
+							corev1.ResourceMemory: resource.MustParse(config.MemoryLimit),
 						},
 					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
 								Path: "/health",
-								Port: intstr.FromInt32(int32(m.config.AgentPort)),
+								Port: intstr.FromInt32(int32(config.AgentPort)),
 							},
 						},
 						InitialDelaySeconds: 2,
@@ -275,17 +277,6 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 					Env: []corev1.EnvVar{
 						{Name: "KUBECONFIG", Value: "/config/kubeconfig"},
 						{Name: "HOME", Value: "/workspace"},
-						{
-							Name: "SANDBOX_AUTH_TOKEN",
-							ValueFrom: &corev1.EnvVarSource{
-								SecretKeyRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: secretNamePrefix + sessionID,
-									},
-									Key: "token",
-								},
-							},
-						},
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "kubeconfig", MountPath: "/config", ReadOnly: true},
@@ -298,7 +289,7 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 					Name: "kubeconfig",
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
-							SecretName: m.config.KubeconfigSecret,
+							SecretName: config.KubeconfigSecret,
 						},
 					},
 				},
@@ -313,11 +304,35 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 	}
 }
 
-func (m *SessionManager) buildAuthSecret(sessionID, token string) *corev1.Secret {
+// buildPodSpec constructs a session-specific pod by applying session fields
+// (name, session-id label, last-activity annotation, SANDBOX_AUTH_TOKEN env)
+// on top of the shared base pod spec.
+func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
+	pod := buildBasePodSpec(m.config)
+	pod.Name = podNamePrefix + sessionID
+	pod.Labels[labelSessionID] = sessionID
+	pod.Annotations[annotationLastActivity] = pod.Annotations[annotationCreatedAt]
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name: "SANDBOX_AUTH_TOKEN",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: secretNamePrefix + sessionID,
+				},
+				Key: "token",
+			},
+		},
+	})
+	return pod
+}
+
+// buildAuthSecret constructs the per-session auth Secret containing the
+// HMAC-derived token. Shared by SessionManager and WarmPool.
+func buildAuthSecret(namespace, sessionID, token string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretNamePrefix + sessionID,
-			Namespace: m.config.Namespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				labelSessionID: sessionID,
 				labelComponent: componentValue,
@@ -361,7 +376,7 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string) (podIP, podName string, err error) {
 	token := computeToken(m.config.HMACKey, sessionID)
 
-	secret := m.buildAuthSecret(sessionID, token)
+	secret := buildAuthSecret(m.config.Namespace, sessionID, token)
 	_, err = m.clientset.CoreV1().Secrets(m.config.Namespace).Create(ctx, secret, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return "", "", fmt.Errorf("create auth secret: %w", err)

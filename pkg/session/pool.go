@@ -16,10 +16,8 @@ import (
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -87,94 +85,14 @@ func isTerminalPod(pod *corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded
 }
 
-// buildWarmPodSpec constructs a Pod manifest for a warm pool pod. It matches
-// the session manager's buildPodSpec but omits session-specific fields
-// (no session-id label, no SANDBOX_AUTH_TOKEN env var) and uses a UUID-suffixed
-// name since warm pods are interchangeable.
+// buildWarmPodSpec constructs a Pod manifest for a warm pool pod. It uses the
+// shared base pod spec and adds a UUID-suffixed name since warm pods are
+// interchangeable. No session-id label or SANDBOX_AUTH_TOKEN env var.
 func (p *WarmPool) buildWarmPodSpec() *corev1.Pod {
-	now := time.Now().UTC().Format(time.RFC3339)
-	runAsNonRoot := true
-	var runAsUser int64 = 1001
-	var runAsGroup int64 = 1001
-	allowPrivEsc := false
-
 	suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podNamePrefix + suffix,
-			Namespace: p.config.Namespace,
-			Labels: map[string]string{
-				labelComponent: componentValue,
-			},
-			Annotations: map[string]string{
-				annotationCreatedAt: now,
-			},
-		},
-		Spec: corev1.PodSpec{
-			ServiceAccountName: p.config.ServiceAccountName,
-			SecurityContext: &corev1.PodSecurityContext{
-				RunAsNonRoot: &runAsNonRoot,
-				RunAsUser:    &runAsUser,
-				RunAsGroup:   &runAsGroup,
-			},
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: p.config.Image,
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(p.config.CPURequest),
-							corev1.ResourceMemory: resource.MustParse(p.config.MemoryRequest),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(p.config.CPULimit),
-							corev1.ResourceMemory: resource.MustParse(p.config.MemoryLimit),
-						},
-					},
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
-								Port: intstr.FromInt32(int32(p.config.AgentPort)),
-							},
-						},
-						InitialDelaySeconds: 2,
-						PeriodSeconds:       10,
-					},
-					SecurityContext: &corev1.SecurityContext{
-						AllowPrivilegeEscalation: &allowPrivEsc,
-						Capabilities: &corev1.Capabilities{
-							Drop: []corev1.Capability{"ALL"},
-						},
-					},
-					Env: []corev1.EnvVar{
-						{Name: "KUBECONFIG", Value: "/config/kubeconfig"},
-						{Name: "HOME", Value: "/workspace"},
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "kubeconfig", MountPath: "/config", ReadOnly: true},
-						{Name: "workspace", MountPath: "/workspace"},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "kubeconfig",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: p.config.KubeconfigSecret,
-						},
-					},
-				},
-				{
-					Name: "workspace",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-			},
-		},
-	}
+	pod := buildBasePodSpec(p.config)
+	pod.Name = podNamePrefix + suffix
+	return pod
 }
 
 // ReconcilePool ensures the number of unassigned warm pods matches WarmPoolSize.
@@ -288,7 +206,7 @@ func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID s
 	}
 
 	token := computeToken(p.config.HMACKey, sessionID)
-	secret := p.buildAuthSecret(sessionID, token)
+	secret := buildAuthSecret(p.config.Namespace, sessionID, token)
 	_, secretErr := p.clientset.CoreV1().Secrets(p.config.Namespace).Create(ctx, secret, metav1.CreateOptions{})
 	if secretErr != nil {
 		p.rollbackLabel(ctx, pod.Name)
@@ -316,21 +234,6 @@ func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID s
 	return ip, patched.Name, nil
 }
 
-func (p *WarmPool) buildAuthSecret(sessionID, token string) *corev1.Secret {
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretNamePrefix + sessionID,
-			Namespace: p.config.Namespace,
-			Labels: map[string]string{
-				labelSessionID: sessionID,
-				labelComponent: componentValue,
-			},
-		},
-		StringData: map[string]string{
-			"token": token,
-		},
-	}
-}
 
 // assignToken sends POST /assign to the agent running on the pod to deliver the HMAC token.
 func (p *WarmPool) assignToken(ctx context.Context, pod *corev1.Pod, token string) error {
