@@ -86,13 +86,11 @@ func isTerminalPod(pod *corev1.Pod) bool {
 }
 
 // buildWarmPodSpec constructs a Pod manifest for a warm pool pod. It uses the
-// shared base pod spec and adds a UUID-suffixed name since warm pods are
+// shared base pod spec with a UUID-suffixed name since warm pods are
 // interchangeable. No session-id label or SANDBOX_AUTH_TOKEN env var.
 func (p *WarmPool) buildWarmPodSpec() *corev1.Pod {
 	suffix := strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
-	pod := buildBasePodSpec(p.config)
-	pod.Name = podNamePrefix + suffix
-	return pod
+	return buildBasePodSpec(podNamePrefix+suffix, p.config)
 }
 
 // ReconcilePool ensures the number of unassigned warm pods matches WarmPoolSize.
@@ -218,7 +216,7 @@ func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID s
 		ip, err = p.waitForIP(ctx, patched.Name)
 		if err != nil {
 			p.rollbackLabel(ctx, pod.Name)
-			p.bestEffortDeleteSecret(ctx, sessionID)
+			bestEffortDeleteSecret(ctx, p.clientset, p.config.Namespace, sessionID, p.logger)
 			return "", "", fmt.Errorf("wait for pod IP: %w", err)
 		}
 		patched = patched.DeepCopy()
@@ -227,7 +225,7 @@ func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID s
 
 	if assignErr := p.assignToken(ctx, patched, token); assignErr != nil {
 		p.rollbackLabel(ctx, pod.Name)
-		p.bestEffortDeleteSecret(ctx, sessionID)
+		bestEffortDeleteSecret(ctx, p.clientset, p.config.Namespace, sessionID, p.logger)
 		return "", "", fmt.Errorf("assign token to claimed pod: %w", assignErr)
 	}
 
@@ -304,13 +302,6 @@ func (p *WarmPool) rollbackLabel(ctx context.Context, podName string) {
 	}
 }
 
-func (p *WarmPool) bestEffortDeleteSecret(ctx context.Context, sessionID string) {
-	secretName := secretNamePrefix + sessionID
-	err := p.clientset.CoreV1().Secrets(p.config.Namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
-	if err != nil && !k8serrors.IsNotFound(err) {
-		p.logger.Warn("rollback: failed to delete auth secret", "secret", secretName, "error", err)
-	}
-}
 
 // TriggerReplenish sends a non-blocking signal to the reconciler to run
 // immediately. Multiple rapid calls coalesce into a single reconciliation.

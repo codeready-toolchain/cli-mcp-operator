@@ -71,10 +71,9 @@ func TestBuildWarmPodSpec(t *testing.T) {
 	_, hasSessionID := pod.Labels[labelSessionID]
 	assert.False(t, hasSessionID, "warm pod must not have session-id label")
 
-	// then — has created-at annotation but no last-activity
+	// then — has both created-at and last-activity annotations
 	assert.NotEmpty(t, pod.Annotations[annotationCreatedAt])
-	_, hasLastActivity := pod.Annotations[annotationLastActivity]
-	assert.False(t, hasLastActivity, "warm pod must not have last-activity annotation")
+	assert.NotEmpty(t, pod.Annotations[annotationLastActivity])
 
 	// then — pod security context
 	require.NotNil(t, pod.Spec.SecurityContext)

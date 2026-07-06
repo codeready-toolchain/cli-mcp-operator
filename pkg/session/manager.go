@@ -216,11 +216,11 @@ func isPodReady(pod *corev1.Pod) bool {
 }
 
 // buildBasePodSpec constructs the shared sandbox pod spec used by both
-// on-demand creation and warm pool pre-creation. It includes the component
-// label, created-at annotation, security context, readiness probe, volumes,
-// and base env vars. Callers add session-specific fields (name, session-id
-// label, SANDBOX_AUTH_TOKEN env var) as needed.
-func buildBasePodSpec(config SandboxConfig) *corev1.Pod {
+// on-demand creation and warm pool pre-creation. It includes the pod name,
+// component label, created-at and last-activity annotations, security context,
+// readiness probe, volumes, and base env vars. Callers add session-specific
+// fields (session-id label, SANDBOX_AUTH_TOKEN env var) as needed.
+func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 	now := time.Now().UTC().Format(time.RFC3339)
 	runAsNonRoot := true
 	var runAsUser int64 = 1001
@@ -229,12 +229,14 @@ func buildBasePodSpec(config SandboxConfig) *corev1.Pod {
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
 			Namespace: config.Namespace,
 			Labels: map[string]string{
 				labelComponent: componentValue,
 			},
 			Annotations: map[string]string{
-				annotationCreatedAt: now,
+				annotationCreatedAt:    now,
+				annotationLastActivity: now,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -305,13 +307,10 @@ func buildBasePodSpec(config SandboxConfig) *corev1.Pod {
 }
 
 // buildPodSpec constructs a session-specific pod by applying session fields
-// (name, session-id label, last-activity annotation, SANDBOX_AUTH_TOKEN env)
-// on top of the shared base pod spec.
+// (session-id label, SANDBOX_AUTH_TOKEN env) on top of the shared base pod spec.
 func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
-	pod := buildBasePodSpec(m.config)
-	pod.Name = podNamePrefix + sessionID
+	pod := buildBasePodSpec(podNamePrefix+sessionID, m.config)
 	pod.Labels[labelSessionID] = sessionID
-	pod.Annotations[annotationLastActivity] = pod.Annotations[annotationCreatedAt]
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
 		Name: "SANDBOX_AUTH_TOKEN",
 		ValueFrom: &corev1.EnvVarSource{
@@ -388,7 +387,7 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 		if k8serrors.IsAlreadyExists(err) {
 			return "", "", err
 		}
-		m.bestEffortDeleteSecret(ctx, sessionID)
+		bestEffortDeleteSecret(ctx, m.clientset, m.config.Namespace, sessionID, m.logger)
 		return "", "", fmt.Errorf("create pod: %w", err)
 	}
 
@@ -399,11 +398,13 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 	return ip, created.Name, nil
 }
 
-func (m *SessionManager) bestEffortDeleteSecret(ctx context.Context, sessionID string) {
+// bestEffortDeleteSecret deletes the per-session auth Secret, logging a
+// warning on failure. Shared by SessionManager and WarmPool.
+func bestEffortDeleteSecret(ctx context.Context, clientset kubernetes.Interface, namespace, sessionID string, logger *slog.Logger) {
 	secretName := secretNamePrefix + sessionID
-	err := m.clientset.CoreV1().Secrets(m.config.Namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+	err := clientset.CoreV1().Secrets(namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
 	if err != nil && !k8serrors.IsNotFound(err) {
-		m.logger.Warn("failed to delete orphaned auth secret", "secret", secretName, "error", err)
+		logger.Warn("failed to delete auth secret", "secret", secretName, "error", err)
 	}
 }
 
