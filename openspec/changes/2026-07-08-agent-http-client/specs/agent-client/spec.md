@@ -35,6 +35,13 @@ The `AgentClient` SHALL provide `Execute`, `Assign`, and `HealthCheck` methods t
 - **AND** the `StatusCode` field SHALL be 200
 - **AND** the `Op` field SHALL be `"execute"`
 
+#### Scenario: Execute returns DecodeError when response exceeds maximum size
+- **WHEN** `Execute` is called
+- **AND** the agent returns HTTP 200 with a body larger than the configured maximum response size (default 10 MB)
+- **THEN** it SHALL return a `*DecodeError`
+- **AND** the error message SHALL indicate the response exceeded the size limit
+- **AND** the `StatusCode` field SHALL be 200
+
 #### Scenario: Execute respects context cancellation
 - **WHEN** `Execute` is called with a context that is cancelled before the HTTP response arrives
 - **THEN** it SHALL return a `*NetworkError` wrapping `context.Canceled`
@@ -118,6 +125,14 @@ The `AgentClient` SHALL support configurable timeouts that apply to all HTTP req
 - **WHEN** `NewAgentClient(WithPort(9090))` is called
 - **THEN** all requests SHALL target port 9090
 
+#### Scenario: Default maximum response size
+- **WHEN** `NewAgentClient()` is called with no options
+- **THEN** the maximum response body size for successful responses SHALL be 10 MB (10,485,760 bytes)
+
+#### Scenario: Custom maximum response size via WithMaxResponseSize option
+- **WHEN** `NewAgentClient(WithMaxResponseSize(5 * 1024 * 1024))` is called
+- **THEN** successful response bodies exceeding 5 MB SHALL return a `*DecodeError`
+
 ### Requirement: Typed errors support errors.Is and errors.As
 
 All error types (`NetworkError`, `StatusError`, `DecodeError`) SHALL implement the standard Go error interface and support unwrapping.
@@ -151,6 +166,19 @@ The `AgentClient` SHALL be safe for concurrent use from multiple goroutines with
 #### Scenario: Concurrent Execute and HealthCheck calls
 - **WHEN** one goroutine calls `Execute` while another calls `HealthCheck` on the same pod IP
 - **THEN** both calls SHALL complete without data races
+
+### Requirement: AgentClient properly manages HTTP response body lifecycle
+
+All methods SHALL close `resp.Body` on every code path and drain unconsumed bodies for connection reuse.
+
+#### Scenario: Response body is closed on all paths
+- **WHEN** any method (`Execute`, `Assign`, `HealthCheck`) receives an HTTP response
+- **THEN** `resp.Body` SHALL be closed via `defer resp.Body.Close()` regardless of status code or decode outcome
+
+#### Scenario: Unconsumed response body is drained for connection reuse
+- **WHEN** `Assign` or `HealthCheck` receives a successful HTTP 200 response
+- **AND** the response body is not consumed by JSON decoding
+- **THEN** the body SHALL be drained (read to completion) before closing to allow the underlying TCP connection to be returned to the pool
 
 ### Requirement: AgentClient uses HTTP within the Kubernetes cluster trust boundary
 

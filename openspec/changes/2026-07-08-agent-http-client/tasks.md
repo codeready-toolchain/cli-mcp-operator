@@ -8,12 +8,14 @@
 
 ## 2. AgentClient — Core Structure
 
-- [ ] 2.1 Create `pkg/agent/client.go` with `AgentClient` struct (`httpClient *http.Client`, `port int`)
-- [ ] 2.2 Implement `NewAgentClient(opts ...Option)` with defaults: 30s timeout, port 8090
+- [ ] 2.1 Create `pkg/agent/client.go` with `AgentClient` struct (`httpClient *http.Client`, `port int`, `maxResponseSize int64`)
+- [ ] 2.2 Implement `NewAgentClient(opts ...Option)` with defaults: 30s timeout, port 8090, `DefaultMaxResponseSize` (10 MB)
 - [ ] 2.3 Implement `WithTimeout(d time.Duration) Option` — sets `http.Client.Timeout`
 - [ ] 2.4 Implement `WithHTTPClient(c *http.Client) Option` — replaces the entire HTTP client (for testing)
 - [ ] 2.5 Implement `WithPort(port int) Option` — overrides the default agent port
-- [ ] 2.6 Add `buildURL(podIP, path string) string` helper — constructs `http://<podIP>:<port><path>` using `net.JoinHostPort`
+- [ ] 2.6 Implement `WithMaxResponseSize(n int64) Option` — overrides the default maximum response body size for successful `Execute` responses
+- [ ] 2.7 Add `buildURL(podIP, path string) string` helper — constructs `http://<podIP>:<port><path>` using `net.JoinHostPort`
+- [ ] 2.8 Define `DefaultMaxResponseSize = 10 * 1024 * 1024` (10 MB) as a package-level constant
 
 ## 3. AgentClient — Execute Method
 
@@ -21,9 +23,11 @@
 - [ ] 3.2 Marshal `ExecRequest` to JSON; return error on marshal failure (should not happen with valid types)
 - [ ] 3.3 Create `POST` request with context, set `Content-Type: application/json` and `Authorization: Bearer <token>` headers
 - [ ] 3.4 On `httpClient.Do` error, classify as `*NetworkError` with `Op: "execute"`
-- [ ] 3.5 On non-200 status, read body (truncated to 512 bytes), return `*StatusError`
-- [ ] 3.6 On 200 status, decode JSON into `ExecResponse`; on decode failure, return `*DecodeError` with raw body (truncated to 512 bytes)
-- [ ] 3.7 On success, return `*ExecResponse`
+- [ ] 3.5 Immediately `defer resp.Body.Close()` after successful `httpClient.Do` — ensures body is closed on all paths (success, status error, decode error)
+- [ ] 3.6 On non-200 status, read body (truncated to 512 bytes), return `*StatusError`
+- [ ] 3.7 On 200 status, wrap `resp.Body` with `io.LimitReader(resp.Body, maxResponseSize)` before decoding JSON into `ExecResponse`; if the limited reader is exhausted (body exceeds cap), return `*DecodeError` indicating response too large
+- [ ] 3.8 On decode failure (malformed JSON within size limit), return `*DecodeError` with raw body (truncated to 512 bytes)
+- [ ] 3.9 On success, return `*ExecResponse`
 
 ## 4. AgentClient — Assign Method
 
@@ -31,21 +35,24 @@
 - [ ] 4.2 Marshal `AssignRequest` to JSON
 - [ ] 4.3 Create `POST` request with context, set `Content-Type: application/json`, no `Authorization` header
 - [ ] 4.4 On `httpClient.Do` error, return `*NetworkError` with `Op: "assign"`
-- [ ] 4.5 On non-200 status, return `*StatusError` with body (truncated to 512 bytes)
-- [ ] 4.6 On 200 status, return nil
+- [ ] 4.5 Immediately `defer resp.Body.Close()` after successful `httpClient.Do`
+- [ ] 4.6 On non-200 status, return `*StatusError` with body (truncated to 512 bytes)
+- [ ] 4.7 On 200 status, drain body with `io.Copy(io.Discard, resp.Body)` for connection reuse, then return nil
 
 ## 5. AgentClient — HealthCheck Method
 
 - [ ] 5.1 Implement `HealthCheck(ctx context.Context, podIP string) error`
 - [ ] 5.2 Create `GET` request with context, no auth headers
 - [ ] 5.3 On `httpClient.Do` error, return `*NetworkError` with `Op: "health_check"`
-- [ ] 5.4 On non-200 status, return `*StatusError` with body (truncated to 512 bytes)
-- [ ] 5.5 On 200 status, return nil (body is not read — health check is a simple liveness signal)
+- [ ] 5.4 Immediately `defer resp.Body.Close()` after successful `httpClient.Do`
+- [ ] 5.5 On non-200 status, return `*StatusError` with body (truncated to 512 bytes)
+- [ ] 5.6 On 200 status, drain body with `io.Copy(io.Discard, resp.Body)` for connection reuse, then return nil
 
 ## 6. Internal Helpers
 
-- [ ] 6.1 Implement `readBodyTruncated(body io.ReadCloser, limit int) string` — reads up to `limit` bytes and returns as string; closes the body
+- [ ] 6.1 Implement `readBodyTruncated(body io.Reader, limit int) string` — reads up to `limit` bytes and returns as string (caller is responsible for closing)
 - [ ] 6.2 Implement `classifyDoError(err error, op, url string) *NetworkError` — wraps the error from `httpClient.Do` into a `*NetworkError`
+- [ ] 6.3 Implement `drainAndClose(body io.ReadCloser)` — drains remaining body content (up to a small cap, e.g., 4 KB) into `io.Discard` then closes; used by `Assign` and `HealthCheck` success paths to enable connection reuse
 
 ## 7. Unit Tests
 
@@ -74,4 +81,6 @@
 - [ ] 7.23 Error tests: `errors.As(err, &DecodeError{})` works
 - [ ] 7.24 Error tests: `errors.Is(networkErr, context.DeadlineExceeded)` works through unwrap chain
 - [ ] 7.25 Error tests: `StatusError.Body` is truncated to 512 bytes for large responses
-- [ ] 7.26 Concurrency tests: parallel Execute calls with different pod IPs complete without data races (run with `-race`)
+- [ ] 7.26 Execute tests: response exceeding `DefaultMaxResponseSize` returns `*DecodeError`
+- [ ] 7.27 Option tests: `WithMaxResponseSize` overrides the default cap
+- [ ] 7.28 Concurrency tests: parallel Execute calls with different pod IPs complete without data races (run with `-race`)

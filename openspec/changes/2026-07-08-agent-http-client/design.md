@@ -21,7 +21,7 @@ SANDBOX-1813 (bash tool handler) needs to call `Execute` with clean error semant
 - Circuit breaker or connection pooling configuration (stdlib defaults are sufficient)
 - Refactoring `manager.go` and `pool.go` to use `AgentClient` (separate change, reduces risk)
 - Metrics or tracing instrumentation (SANDBOX-1820)
-- Response body size limits (agent responses are bounded by command output; if needed, add later)
+- Streaming/chunked response delivery to callers (callers receive the full decoded response)
 
 ## Decisions
 
@@ -45,11 +45,12 @@ type Option func(*AgentClient)
 func WithTimeout(d time.Duration) Option
 func WithHTTPClient(c *http.Client) Option
 func WithPort(port int) Option
+func WithMaxResponseSize(n int64) Option
 ```
 
 **Rationale:**
 - Follows idiomatic Go patterns for optional configuration
-- Defaults are sensible (30s timeout, `http.DefaultClient`-like behavior, port 8090)
+- Defaults are sensible (30s timeout, `http.DefaultClient`-like behavior, port 8090, 10 MB max response size)
 - Easy to extend with new options (e.g., `WithLogger`) without breaking existing callers
 - Testing injects a custom `*http.Client` via `WithHTTPClient`
 
@@ -135,8 +136,9 @@ func (c *AgentClient) HealthCheck(ctx context.Context, podIP string) error
 ### Decision 7: Request body and response body size safety
 
 - Request bodies (`ExecRequest`, `AssignRequest`) are small by design — the largest field is `ExecRequest.Command` which is bounded by the bash tool handler's input validation
-- Response bodies are read into memory for JSON decoding. `ExecResponse` can contain large `Stdout`/`Stderr` fields (command output). The `AgentClient` does **not** impose a size limit on successful responses — the agent itself bounds output via the bash session's timeout mechanism. If output size limiting is needed, it should be added at the agent level or the tool handler level, not in the HTTP client.
-- Error response bodies (for `StatusError` and `DecodeError`) are truncated to 512 bytes to prevent log pollution
+- **Successful response bodies** are read into memory for JSON decoding via `io.LimitReader` with a default cap of **10 MB** (`DefaultMaxResponseSize`). This prevents a single large `Stdout`/`Stderr` response from exhausting process memory during decode. The limit is configurable via `WithMaxResponseSize(n int64) Option`. If the response exceeds the limit, the client returns a `*DecodeError` (the body is valid but too large to safely decode in-process). The 10 MB default is generous for CLI command output — commands producing more output than this are pathological and should be bounded upstream (at the agent or tool handler level).
+- **Error response bodies** (for `StatusError` and `DecodeError`) are truncated to 512 bytes to prevent log pollution
+- **Response body lifecycle:** All methods (`Execute`, `Assign`, `HealthCheck`) close `resp.Body` on every path — both success and error — via `defer resp.Body.Close()` immediately after `httpClient.Do` returns. On success paths where the body is not fully consumed (e.g., `Assign`, `HealthCheck`), the body is drained with `io.Copy(io.Discard, resp.Body)` before closing to enable HTTP connection reuse.
 
 ### Decision 8: No automatic retries
 
@@ -156,8 +158,8 @@ The `AgentClient` does not retry failed requests. Each method makes exactly one 
 **Risk:** `StatusError.Body` truncation at 512 bytes may lose diagnostic information for large error responses
 → **Mitigation:** 512 bytes is sufficient for typical error messages ("unauthorized", "already assigned", JSON error objects). If a specific endpoint returns larger error payloads, the limit can be increased per-endpoint later.
 
-**Trade-off:** No response body size limit on successful `Execute` responses
-→ **Accepted:** Command output size is bounded by execution timeout at the agent level. Adding a client-side limit would create a confusing failure mode where a command succeeds at the agent but fails at the client. If output is too large for the LLM context window, that's the tool handler's concern (SANDBOX-1813), not the HTTP client's.
+**Trade-off:** 10 MB default cap on successful `Execute` response bodies
+→ **Accepted:** The cap prevents unbounded memory allocation during JSON decode while being generous enough for all realistic CLI command output. Commands producing >10 MB of stdout/stderr are pathological (e.g., `cat /dev/urandom | base64`). The limit is configurable via `WithMaxResponseSize` for callers with known-large payloads. When exceeded, the client returns a `*DecodeError` with a clear message — callers can distinguish "response too large" from "malformed JSON" via the error text.
 
 **Trade-off:** Single shared `*http.Client` across all methods and sessions
 → **Accepted:** `http.Client` is documented as safe for concurrent use and internally manages a connection pool. Per-session clients would waste connections and prevent connection reuse between calls to the same agent pod.
