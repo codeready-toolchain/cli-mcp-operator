@@ -300,7 +300,7 @@ func TestBuildAuthSecret(t *testing.T) {
 	token := computeToken(mgr.config.HMACKey, "inv-sec")
 
 	// when
-	secret := mgr.buildAuthSecret("inv-sec", token)
+	secret := buildAuthSecret(testNamespace, "inv-sec", token)
 
 	// then
 	assert.Equal(t, secretNamePrefix+"inv-sec", secret.Name)
@@ -362,7 +362,7 @@ func TestCleanupSession(t *testing.T) {
 	mgr.cache.Set("inv-clean", "10.0.0.5", podNamePrefix+"inv-clean")
 
 	ctx := context.Background()
-	secret := mgr.buildAuthSecret("inv-clean", "tok")
+	secret := buildAuthSecret(testNamespace, "inv-clean", "tok")
 	_, err := mgr.clientset.CoreV1().Secrets(testNamespace).Create(ctx, secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 

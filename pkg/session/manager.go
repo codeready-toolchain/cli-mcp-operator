@@ -49,6 +49,7 @@ type SessionManager struct {
 	clientset  kubernetes.Interface
 	config     SandboxConfig
 	cache      *PodCache
+	pool       *WarmPool
 	httpClient *http.Client
 	logger     *slog.Logger
 }
@@ -65,13 +66,30 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SessionManager{
+	mgr := &SessionManager{
 		clientset:  clientset,
 		config:     config,
 		cache:      NewPodCache(defaultCacheTTL),
 		httpClient: &http.Client{Timeout: 0},
 		logger:     logger,
-	}, nil
+	}
+	if config.WarmPoolSize > 0 {
+		mgr.pool = NewWarmPool(clientset, config, logger)
+	}
+	return mgr, nil
+}
+
+// StartPool starts the warm pool reconciler if the pool is enabled.
+// It should be called once after NewSessionManager during server startup.
+func (m *SessionManager) StartPool(ctx context.Context) {
+	if m.pool != nil {
+		m.pool.StartReconciler(ctx)
+	}
+}
+
+// Pool returns the warm pool (nil when disabled). Exposed for testing.
+func (m *SessionManager) Pool() *WarmPool {
+	return m.pool
 }
 
 // SetHTTPClient replaces the default HTTP client (useful for testing).
@@ -109,6 +127,15 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	if ip != "" {
 		m.cache.Set(sessionID, ip, podName)
 		return ip, nil
+	}
+
+	if m.pool != nil {
+		ip, podName, claimErr := m.pool.ClaimPod(ctx, sessionID)
+		if claimErr == nil {
+			m.cache.Set(sessionID, ip, podName)
+			return ip, nil
+		}
+		m.logger.Info("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
 	}
 
 	ip, podName, err = m.createSandboxPod(ctx, sessionID)
@@ -188,7 +215,12 @@ func isPodReady(pod *corev1.Pod) bool {
 	return false
 }
 
-func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
+// buildBasePodSpec constructs the shared sandbox pod spec used by both
+// on-demand creation and warm pool pre-creation. It includes the pod name,
+// component label, created-at and last-activity annotations, security context,
+// readiness probe, volumes, and base env vars. Callers add session-specific
+// fields (session-id label, SANDBOX_AUTH_TOKEN env var) as needed.
+func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 	now := time.Now().UTC().Format(time.RFC3339)
 	runAsNonRoot := true
 	var runAsUser int64 = 1001
@@ -197,10 +229,9 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      podNamePrefix + sessionID,
-			Namespace: m.config.Namespace,
+			Name:      name,
+			Namespace: config.Namespace,
 			Labels: map[string]string{
-				labelSessionID: sessionID,
 				labelComponent: componentValue,
 			},
 			Annotations: map[string]string{
@@ -209,7 +240,7 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 			},
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: m.config.ServiceAccountName,
+			ServiceAccountName: config.ServiceAccountName,
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: &runAsNonRoot,
 				RunAsUser:    &runAsUser,
@@ -218,22 +249,22 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 			Containers: []corev1.Container{
 				{
 					Name:  "sandbox",
-					Image: m.config.Image,
+					Image: config.Image,
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(m.config.CPURequest),
-							corev1.ResourceMemory: resource.MustParse(m.config.MemoryRequest),
+							corev1.ResourceCPU:    resource.MustParse(config.CPURequest),
+							corev1.ResourceMemory: resource.MustParse(config.MemoryRequest),
 						},
 						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(m.config.CPULimit),
-							corev1.ResourceMemory: resource.MustParse(m.config.MemoryLimit),
+							corev1.ResourceCPU:    resource.MustParse(config.CPULimit),
+							corev1.ResourceMemory: resource.MustParse(config.MemoryLimit),
 						},
 					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
 								Path: "/health",
-								Port: intstr.FromInt32(int32(m.config.AgentPort)),
+								Port: intstr.FromInt32(int32(config.AgentPort)),
 							},
 						},
 						InitialDelaySeconds: 2,
@@ -248,17 +279,6 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 					Env: []corev1.EnvVar{
 						{Name: "KUBECONFIG", Value: "/config/kubeconfig"},
 						{Name: "HOME", Value: "/workspace"},
-						{
-							Name: "SANDBOX_AUTH_TOKEN",
-							ValueFrom: &corev1.EnvVarSource{
-								SecretKeyRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: secretNamePrefix + sessionID,
-									},
-									Key: "token",
-								},
-							},
-						},
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "kubeconfig", MountPath: "/config", ReadOnly: true},
@@ -271,7 +291,7 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 					Name: "kubeconfig",
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
-							SecretName: m.config.KubeconfigSecret,
+							SecretName: config.KubeconfigSecret,
 						},
 					},
 				},
@@ -286,11 +306,32 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 	}
 }
 
-func (m *SessionManager) buildAuthSecret(sessionID, token string) *corev1.Secret {
+// buildPodSpec constructs a session-specific pod by applying session fields
+// (session-id label, SANDBOX_AUTH_TOKEN env) on top of the shared base pod spec.
+func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
+	pod := buildBasePodSpec(podNamePrefix+sessionID, m.config)
+	pod.Labels[labelSessionID] = sessionID
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name: "SANDBOX_AUTH_TOKEN",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: secretNamePrefix + sessionID,
+				},
+				Key: "token",
+			},
+		},
+	})
+	return pod
+}
+
+// buildAuthSecret constructs the per-session auth Secret containing the
+// HMAC-derived token. Shared by SessionManager and WarmPool.
+func buildAuthSecret(namespace, sessionID, token string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretNamePrefix + sessionID,
-			Namespace: m.config.Namespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				labelSessionID: sessionID,
 				labelComponent: componentValue,
@@ -334,7 +375,7 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string) (podIP, podName string, err error) {
 	token := computeToken(m.config.HMACKey, sessionID)
 
-	secret := m.buildAuthSecret(sessionID, token)
+	secret := buildAuthSecret(m.config.Namespace, sessionID, token)
 	_, err = m.clientset.CoreV1().Secrets(m.config.Namespace).Create(ctx, secret, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return "", "", fmt.Errorf("create auth secret: %w", err)
@@ -346,7 +387,7 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 		if k8serrors.IsAlreadyExists(err) {
 			return "", "", err
 		}
-		m.bestEffortDeleteSecret(ctx, sessionID)
+		bestEffortDeleteSecret(ctx, m.clientset, m.config.Namespace, sessionID, m.logger)
 		return "", "", fmt.Errorf("create pod: %w", err)
 	}
 
@@ -357,11 +398,13 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 	return ip, created.Name, nil
 }
 
-func (m *SessionManager) bestEffortDeleteSecret(ctx context.Context, sessionID string) {
+// bestEffortDeleteSecret deletes the per-session auth Secret, logging a
+// warning on failure. Shared by SessionManager and WarmPool.
+func bestEffortDeleteSecret(ctx context.Context, clientset kubernetes.Interface, namespace, sessionID string, logger *slog.Logger) {
 	secretName := secretNamePrefix + sessionID
-	err := m.clientset.CoreV1().Secrets(m.config.Namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+	err := clientset.CoreV1().Secrets(namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
 	if err != nil && !k8serrors.IsNotFound(err) {
-		m.logger.Warn("failed to delete orphaned auth secret", "secret", secretName, "error", err)
+		logger.Warn("failed to delete auth secret", "secret", secretName, "error", err)
 	}
 }
 
