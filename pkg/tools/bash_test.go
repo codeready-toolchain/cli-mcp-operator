@@ -217,13 +217,22 @@ func TestRegisterWith(t *testing.T) {
 
 	// then — verify the server actually exposes the tool via ListTools
 	ct, st := mcp.NewInMemoryTransports()
-	_, err := server.Connect(context.Background(), st, nil)
+	ss, err := server.Connect(context.Background(), st, nil)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := ss.Close(); err != nil {
+			t.Errorf("ServerSession.Close: %v", err)
+		}
+	})
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1"}, nil)
 	cs, err := client.Connect(context.Background(), ct, nil)
 	require.NoError(t, err)
-	t.Cleanup(func() { cs.Close() })
+	t.Cleanup(func() {
+		if err := cs.Close(); err != nil {
+			t.Errorf("ClientSession.Close: %v", err)
+		}
+	})
 
 	result, err := cs.ListTools(context.Background(), nil)
 	require.NoError(t, err)
