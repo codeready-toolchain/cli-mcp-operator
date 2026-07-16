@@ -215,6 +215,18 @@ func TestRegisterWith(t *testing.T) {
 	// when
 	tool.RegisterWith(server)
 
-	// then
-	assert.Equal(t, "bash", tool.Tool().Name)
+	// then — verify the server actually exposes the tool via ListTools
+	ct, st := mcp.NewInMemoryTransports()
+	_, err := server.Connect(context.Background(), st, nil)
+	require.NoError(t, err)
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1"}, nil)
+	cs, err := client.Connect(context.Background(), ct, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { cs.Close() })
+
+	result, err := cs.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 1)
+	assert.Equal(t, "bash", result.Tools[0].Name)
 }
