@@ -1,6 +1,6 @@
 module github.com/codeready-toolchain/cli-mcp-server
 
-go 1.25.8
+go 1.25.12
 
 require (
 	github.com/google/uuid v1.6.0
