@@ -47,7 +47,7 @@ func TestSessionDelete(t *testing.T) {
 		mux := NewMux(mcpSrv, cleaner, checker, logger)
 
 		// when
-		req := httptest.NewRequest(http.MethodDelete, "/sessions/inv-abc", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/sessions/inv-abc", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
@@ -65,7 +65,7 @@ func TestSessionDelete(t *testing.T) {
 		mux := NewMux(mcpSrv, cleaner, checker, logger)
 
 		// when
-		req := httptest.NewRequest(http.MethodDelete, "/sessions/", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/sessions/", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
@@ -83,7 +83,7 @@ func TestSessionDelete(t *testing.T) {
 		mux := NewMux(mcpSrv, cleaner, checker, logger)
 
 		// when
-		req := httptest.NewRequest(http.MethodDelete, "/sessions/inv-fail", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/sessions/inv-fail", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
@@ -103,7 +103,7 @@ func TestSessionDelete(t *testing.T) {
 		mux := NewMux(mcpSrv, cleaner, checker, logger)
 
 		// when
-		req := httptest.NewRequest(http.MethodDelete, "/sessions/INVALID_ID!", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/sessions/INVALID_ID!", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
@@ -123,7 +123,7 @@ func TestLive(t *testing.T) {
 	mux := NewMux(mcpSrv, cleaner, checker, logger)
 
 	// when
-	req := httptest.NewRequest(http.MethodGet, "/live", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/live", nil)
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 
@@ -144,7 +144,7 @@ func TestHealth(t *testing.T) {
 		mux := NewMux(mcpSrv, cleaner, checker, logger)
 
 		// when
-		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
@@ -164,7 +164,7 @@ func TestHealth(t *testing.T) {
 		mux := NewMux(mcpSrv, cleaner, checker, logger)
 
 		// when
-		req := httptest.NewRequest(http.MethodGet, "/health", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 

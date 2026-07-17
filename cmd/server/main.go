@@ -92,6 +92,12 @@ func runServer(cfg runConfig) error {
 	if cfg.sandboxImage == "" {
 		return fmt.Errorf("--sandbox-image is required")
 	}
+	if cfg.idleTimeout <= 0 {
+		return fmt.Errorf("--idle-timeout must be greater than zero")
+	}
+	if cfg.warmPoolSize < 0 {
+		return fmt.Errorf("--warm-pool-size must not be negative")
+	}
 	hmacKey, err := loadHMACKey(cfg.hmacKeyFile)
 	if err != nil {
 		return err
@@ -145,7 +151,11 @@ func serveHTTP(ctx context.Context, cancel context.CancelFunc, address string, m
 	checker := &k8sHealthChecker{clientset: clientset, namespace: namespace}
 	mux := server.NewMux(mcpServer, mgr, checker, logger)
 
-	srv := &http.Server{Addr: address, Handler: mux}
+	srv := &http.Server{
+		Addr:              address,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second, // mitigate slowloris; leave ReadTimeout unset for MCP streams
+	}
 	serverErrChan := make(chan error, 1)
 	go func() {
 		log.Printf("listening on %s (HTTP, stateless)", address)
