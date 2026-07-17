@@ -5,31 +5,43 @@
 The server package SHALL construct an `mcp.Server` following the mcp-server-devsandbox pattern: JSON slog logger, `ServerCapabilities.Tools.ListChanged` equal to `!stateless`, and receiving middleware `MetricsMiddleware` then `LoggingMiddleware` from mcp-common.
 
 #### Scenario: Middleware order and capabilities in stateful mode
-- **WHEN** the MCP server is created with `stateless == false`
+- **WHEN** the MCP server is created with `stateless == false` (stdio only)
 - **THEN** `Tools.ListChanged` SHALL be true
 - **AND** MetricsMiddleware and LoggingMiddleware SHALL be registered as receiving middleware
 
 #### Scenario: ListChanged disabled in stateless mode
-- **WHEN** the MCP server is created with `stateless == true`
+- **WHEN** the MCP server is created with `stateless == true` (required for HTTP)
 - **THEN** `Tools.ListChanged` SHALL be false
 
 ### Requirement: Streamable HTTP handler uses production-safe options
 
-When serving HTTP, the `/mcp` endpoint SHALL use `mcp.NewStreamableHTTPHandler` whose options set `DisableLocalhostProtection` to true and `Stateless` to the configured stateless flag value.
+When serving HTTP, the `/mcp` endpoint SHALL use `mcp.NewStreamableHTTPHandler` with `Stateless: true` and `DisableLocalhostProtection: true`. Stateful HTTP is not supported.
 
 #### Scenario: Localhost protection disabled
 - **WHEN** the Streamable HTTP handler is constructed
 - **THEN** `DisableLocalhostProtection` SHALL be true
 
-#### Scenario: Stateless flag is honored
-- **WHEN** the server is started with `--stateless` (or equivalent config true)
+#### Scenario: HTTP always uses Stateless true
+- **WHEN** the server serves HTTP transport
 - **THEN** `StreamableHTTPOptions.Stateless` SHALL be true
-- **WHEN** stateless is false
-- **THEN** `StreamableHTTPOptions.Stateless` SHALL be false
+- **AND** `Tools.ListChanged` SHALL be false
+
+### Requirement: DisableLocalhostProtection requires a loopback bind address
+
+HTTP listen addresses SHALL use a loopback host so `/mcp` and `DELETE /sessions/{id}` are not exposed without the kube-rbac-proxy authentication boundary.
+
+#### Scenario: Loopback address accepted
+- **WHEN** `--transport` is `http` and `--address` host is `127.0.0.1`, `localhost`, or `::1`
+- **THEN** startup SHALL proceed (subject to other validation)
+
+#### Scenario: Non-loopback address rejected
+- **WHEN** `--transport` is `http` and `--address` host is not loopback
+- **THEN** `runServer` SHALL return a clear error before listening
+- **AND** it SHALL NOT start the HTTP server
 
 ### Requirement: HTTP mux exposes MCP, session delete, metrics, live, and health
 
-The HTTP mux SHALL register exactly these operational routes (in addition to any stdlib defaults): `/mcp`, `DELETE /sessions/{id}`, `/metrics`, `/live`, `/health`.
+The HTTP mux SHALL register these operational routes: `/mcp`, `DELETE /sessions/{id}`, `DELETE /sessions/` (empty-id fallback), `/metrics`, `/live`, `/health`.
 
 #### Scenario: MCP endpoint mounted
 - **WHEN** the HTTP mux is built for HTTP transport
@@ -48,8 +60,13 @@ Session cleanup SHALL be a plain HTTP DELETE endpoint (not an MCP tool). On succ
 - **AND** `CleanupSession` succeeds
 - **THEN** the handler SHALL return HTTP 204 with an empty body
 
-#### Scenario: Missing session id
-- **WHEN** the path session id is empty
+#### Scenario: Missing session id via empty-path fallback
+- **WHEN** a client sends `DELETE /sessions/`
+- **THEN** the mux SHALL return HTTP 400 (not 404 and not a redirect)
+- **AND** it SHALL NOT call `CleanupSession`
+
+#### Scenario: Empty path value on parameterized route
+- **WHEN** the `{id}` path value is empty after routing
 - **THEN** the handler SHALL return HTTP 400
 - **AND** it SHALL NOT call `CleanupSession`
 
@@ -60,7 +77,8 @@ Session cleanup SHALL be a plain HTTP DELETE endpoint (not an MCP tool). On succ
 
 #### Scenario: Method-based routing
 - **WHEN** the mux is configured
-- **THEN** session delete SHALL be registered with a Go 1.22+ method pattern `DELETE /sessions/{id}`
+- **THEN** it SHALL register `DELETE /sessions/{id}` for non-empty ids
+- **AND** it SHALL register `DELETE /sessions/` as an empty-id fallback returning 400
 
 ### Requirement: Liveness probe does not depend on external systems
 

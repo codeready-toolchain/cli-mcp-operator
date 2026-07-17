@@ -8,15 +8,16 @@ SANDBOX-1814 introduces the MCP server bootstrap: Cobra CLI, `mcp.Server` with m
 
 - Add `pkg/server/server.go` with:
   - MCP server construction using mcp-common `MetricsMiddleware` + `LoggingMiddleware` (mcp-server-devsandbox pattern)
-  - `StreamableHTTPHandler` with `Stateless: true` and `DisableLocalhostProtection: true`
-  - HTTP mux: `/mcp`, `DELETE /sessions/{id}` (204), `/metrics`, `/live`, `/health`
+  - `StreamableHTTPHandler` with `Stateless: true` (HTTP only) and `DisableLocalhostProtection: true` (loopback bind required)
+  - HTTP mux: `/mcp`, `DELETE /sessions/{id}` (204), `DELETE /sessions/` (400), `/metrics`, `/live`, `/health`
   - Session delete handler calling `SessionManager.CleanupSession`
   - Health check verifying Kubernetes API reachability (lightweight namespace get)
 
 - Update `cmd/server/main.go` with:
   - Cobra root command and flags (`--address`, `--transport`, `--stateless`, `--namespace`, `--sandbox-image`, `--kubeconfig`, `--hmac-key-file`, `--idle-timeout`, `--warm-pool-size`)
-  - `runServer()` bootstrap: clientset → SessionManager → mcp.Server + middleware → register bash tool → stale cleanup → warm pool reconciler → HTTP listen → signal handling
-  - Graceful shutdown via `http.Server.Shutdown()` on SIGTERM/SIGINT
+  - Startup validation: image + hmac key required for both transports; HTTP requires `--stateless` and loopback `--address`
+  - `runServer()` bootstrap: clientset → SessionManager → mcp.Server + middleware → register bash tool → stale cleanup → warm pool reconciler → HTTP listen → signal **or** serve-error handling
+  - Graceful shutdown via `http.Server.Shutdown()` on SIGTERM/SIGINT; fatal return on unexpected ListenAndServe errors
 
 - Add focused unit tests in `pkg/server/server_test.go` (mux endpoints, bash registration, health/delete behavior)
 
