@@ -102,7 +102,8 @@ func (m *SessionManager) SetCache(c *PodCache) {
 	m.cache = c
 }
 
-func validateSessionID(sessionID string) error {
+// ValidateSessionID checks that sessionID matches RFC 1123 DNS label format.
+func ValidateSessionID(sessionID string) error {
 	if !sessionIDRegex.MatchString(sessionID) {
 		return fmt.Errorf("invalid session ID %q: must match RFC 1123 DNS label format", sessionID)
 	}
@@ -112,7 +113,7 @@ func validateSessionID(sessionID string) error {
 // GetOrCreatePod resolves or creates a sandbox pod for the session.
 // Lookup order: cache → label-based K8s API discovery → idempotent create.
 func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (podIP string, err error) {
-	if err := validateSessionID(sessionID); err != nil {
+	if err := ValidateSessionID(sessionID); err != nil {
 		return "", err
 	}
 
