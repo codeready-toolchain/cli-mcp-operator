@@ -96,7 +96,9 @@ mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 
 ### Decision 4: Session delete is plain HTTP, not an MCP tool
 
-`DELETE /sessions/{id}` calls `SessionManager.CleanupSession` and returns **204 No Content** on success. Cleanup failure → 500 with error text.
+`DELETE /sessions/{id}` calls `SessionManager.CleanupSession` and returns **204 No Content** on success.
+
+On cleanup failure: return a **stable generic HTTP 500** body (e.g. `"failed to end session"`) — do **not** echo `CleanupSession`'s error text to the client (avoids leaking Kubernetes/pod internals). Log the wrapped cause server-side with session ID (and request correlation if available).
 
 Use Go 1.22+ method routing for the primary route, **plus** an explicit empty-id fallback:
 
@@ -161,6 +163,16 @@ Cancel the background context that drives stale cleanup and warm-pool reconciler
 **Alternative considered:** Wait only on signals, ignore serve errors
 - Rejected — address-in-use or bind failures would leave a zombie process with background workers
 
+### Decision 6b: stdio transport blocking and shutdown
+
+For `--transport stdio`:
+- Call `mcp.Server.Run(ctx, &mcp.StdioTransport{})` on the shared cancellable context (blocks until the transport ends or ctx is cancelled)
+- On SIGTERM/SIGINT: cancel that context so `Run` returns; then cancel/stop stale-cleanup and warm-pool workers (same background ctx)
+- If `Run` returns a non-nil error (transport/protocol failure), return it from `runServer` after stopping background workers
+- stdio is local/dev only; HTTP remains the production path
+
+**Rationale:** Gives stdio the same worker lifecycle guarantees as HTTP without inventing a second shutdown stack.
+
 ### Decision 7: Stale cleanup and warm pool started from `runServer`
 
 After SessionManager construction:
@@ -190,7 +202,7 @@ After SessionManager construction:
 
 **Startup validation summary:**
 1. `--sandbox-image` non-empty
-2. `--hmac-key-file` readable and non-empty contents
+2. `--hmac-key-file` path non-empty, file readable, **and loaded contents length > 0** (reject zero-byte files before `NewSessionManager`)
 3. `http` ⇒ `--stateless` must be true; address host must be loopback
 4. `stdio` ⇒ `--stateless` must be false
 

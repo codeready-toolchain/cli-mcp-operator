@@ -70,10 +70,11 @@ Session cleanup SHALL be a plain HTTP DELETE endpoint (not an MCP tool). On succ
 - **THEN** the handler SHALL return HTTP 400
 - **AND** it SHALL NOT call `CleanupSession`
 
-#### Scenario: Cleanup failure
+#### Scenario: Cleanup failure returns generic 500
 - **WHEN** `CleanupSession` returns an error
 - **THEN** the handler SHALL return HTTP 500
-- **AND** the response body SHALL include an error description
+- **AND** the response body SHALL be a stable generic message that does not include the underlying error text
+- **AND** the server SHALL log the wrapped cleanup error with the session ID (and request correlation if available)
 
 #### Scenario: Method-based routing
 - **WHEN** the mux is configured

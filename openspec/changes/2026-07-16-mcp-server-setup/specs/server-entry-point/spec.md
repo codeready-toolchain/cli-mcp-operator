@@ -23,6 +23,12 @@ The `cli-mcp-server` binary SHALL use a Cobra root command with the following fl
 - **AND** it SHALL NOT create a SessionManager with invalid config
 - **AND** this SHALL apply for both `--transport stdio` and `--transport http`
 
+#### Scenario: Zero-length HMAC key file is rejected
+- **WHEN** `--hmac-key-file` points to a readable file whose contents are zero-length
+- **THEN** `runServer` SHALL return a clear error before constructing `SessionManager`
+- **AND** it SHALL NOT start either transport
+- **AND** this SHALL apply for both `--transport stdio` and `--transport http`
+
 #### Scenario: Default invocation without required flags fails
 - **WHEN** the binary is started with only default flag values (no `--sandbox-image`, no `--hmac-key-file`)
 - **THEN** `runServer` SHALL fail validation and exit non-zero
@@ -89,6 +95,24 @@ For `--transport http`, the entry point SHALL serve the mux with `net/http.Serve
 #### Scenario: ErrServerClosed is not a fatal serve failure
 - **WHEN** `ListenAndServe` returns `http.ErrServerClosed` after a normal `Shutdown`
 - **THEN** `runServer` SHALL treat it as successful shutdown, not as a serve failure
+
+### Requirement: stdio transport blocks until cancel or transport error
+
+For `--transport stdio`, `runServer` SHALL serve via `mcp.Server.Run` with `StdioTransport` on the shared cancellable context and SHALL stop background workers when the transport ends.
+
+#### Scenario: stdio blocks on Run
+- **WHEN** `--transport` is `stdio` and validation succeeds
+- **THEN** `runServer` SHALL call `server.Run(ctx, &mcp.StdioTransport{})` and block until that call returns
+
+#### Scenario: SIGTERM cancels stdio and stops workers
+- **WHEN** the process receives SIGTERM (or SIGINT) while serving stdio
+- **THEN** it SHALL cancel the shared context so `Run` returns
+- **AND** it SHALL stop the stale-cleanup and warm-pool workers
+
+#### Scenario: stdio transport error stops workers and surfaces
+- **WHEN** `server.Run` returns a non-nil error
+- **THEN** `runServer` SHALL stop background workers
+- **AND** it SHALL return that error (or a wrapped form) to the caller
 
 ### Requirement: Version is logged at startup
 

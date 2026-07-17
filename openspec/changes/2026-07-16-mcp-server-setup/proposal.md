@@ -10,7 +10,7 @@ SANDBOX-1814 introduces the MCP server bootstrap: Cobra CLI, `mcp.Server` with m
   - MCP server construction using mcp-common `MetricsMiddleware` + `LoggingMiddleware` (mcp-server-devsandbox pattern)
   - `StreamableHTTPHandler` with `Stateless: true` (HTTP only) and `DisableLocalhostProtection: true` (loopback bind required)
   - HTTP mux: `/mcp`, `DELETE /sessions/{id}` (204), `DELETE /sessions/` (400), `/metrics`, `/live`, `/health`
-  - Session delete handler calling `SessionManager.CleanupSession`
+  - Session delete handler calling `SessionManager.CleanupSession` (generic 500 on failure; details logged server-side)
   - Health check verifying Kubernetes API reachability (lightweight namespace get)
 
 - Update `cmd/server/main.go` with:
