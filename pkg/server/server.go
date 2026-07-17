@@ -7,17 +7,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"regexp"
 	"time"
 
+	"github.com/codeready-toolchain/cli-mcp-server/pkg/session"
+	"github.com/codeready-toolchain/cli-mcp-server/pkg/version"
 	"github.com/codeready-toolchain/mcp-common/pkg/middleware"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-const serverName = "cli-mcp-server"
-
-var sessionIDRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // SessionCleaner abstracts session cleanup for testability.
 type SessionCleaner interface {
@@ -32,7 +29,7 @@ type HealthChecker interface {
 // NewMCPServer constructs an mcp.Server with mcp-common middleware.
 func NewMCPServer(name string, stateless bool, logger *slog.Logger) *mcp.Server {
 	srv := mcp.NewServer(
-		&mcp.Implementation{Name: name, Version: "dev"},
+		&mcp.Implementation{Name: name, Version: version.Commit},
 		&mcp.ServerOptions{
 			Capabilities: &mcp.ServerCapabilities{
 				Tools: &mcp.ToolCapabilities{ListChanged: !stateless},
@@ -88,7 +85,7 @@ func NewMux(mcpServer *mcp.Server, cleaner SessionCleaner, checker HealthChecker
 			http.Error(w, "missing session ID", http.StatusBadRequest)
 			return
 		}
-		if !sessionIDRegex.MatchString(sessionID) {
+		if err := session.ValidateSessionID(sessionID); err != nil {
 			http.Error(w, "invalid session ID format", http.StatusBadRequest)
 			return
 		}
