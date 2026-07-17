@@ -41,6 +41,8 @@ config.local.json
 # Build output
 /bin/
 /dist/
+/server
+/agent
 
 # Temporary files
 /tmp/
