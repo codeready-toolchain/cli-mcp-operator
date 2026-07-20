@@ -1,12 +1,9 @@
 package session
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -31,7 +28,7 @@ const (
 type WarmPool struct {
 	clientset   kubernetes.Interface
 	config      SandboxConfig
-	httpClient  *http.Client
+	agentClient *agent.AgentClient
 	logger      *slog.Logger
 	replenishCh chan struct{}
 }
@@ -43,17 +40,24 @@ func NewWarmPool(clientset kubernetes.Interface, config SandboxConfig, logger *s
 		logger = slog.Default()
 	}
 	return &WarmPool{
-		clientset:   clientset,
-		config:      config,
-		httpClient:  &http.Client{Timeout: assignTimeout},
+		clientset: clientset,
+		config:    config,
+		agentClient: agent.NewAgentClient(
+			agent.WithPort(config.AgentPort),
+			agent.WithTimeout(assignTimeout),
+		),
 		logger:      logger,
 		replenishCh: make(chan struct{}, 1),
 	}
 }
 
-// SetHTTPClient replaces the default HTTP client (useful for testing).
+// SetHTTPClient replaces the agent client's underlying HTTP client (useful for testing).
+// The provided client's timeout is preserved.
 func (p *WarmPool) SetHTTPClient(c *http.Client) {
-	p.httpClient = c
+	p.agentClient = agent.NewAgentClient(
+		agent.WithHTTPClient(c),
+		agent.WithPort(p.config.AgentPort),
+	)
 }
 
 // unassignedSelector returns a label selector matching sandbox pods without a session-id.
@@ -240,28 +244,8 @@ func (p *WarmPool) assignToken(ctx context.Context, pod *corev1.Pod, token strin
 		return fmt.Errorf("pod %s has no IP", pod.Name)
 	}
 
-	reqBody := agent.AssignRequest{Token: token}
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("marshal assign request: %w", err)
-	}
-
-	host := net.JoinHostPort(ip, fmt.Sprintf("%d", p.config.AgentPort))
-	url := fmt.Sprintf("http://%s/assign", host)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return fmt.Errorf("create assign request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := p.httpClient.Do(httpReq)
-	if err != nil {
+	if err := p.agentClient.Assign(ctx, ip, agent.AssignRequest{Token: token}); err != nil {
 		return fmt.Errorf("assign request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("assign returned status %d", resp.StatusCode)
 	}
 	return nil
 }
