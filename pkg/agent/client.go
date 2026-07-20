@@ -27,6 +27,8 @@ const (
 // Communication uses plain HTTP within the Kubernetes pod network trust boundary:
 // NetworkPolicy restricts ingress to sandbox pods, and bearer tokens authenticate
 // callers. TLS can be added later as a localized change if needed.
+//
+//nolint:revive // name matches design docs
 type AgentClient struct {
 	httpClient      *http.Client
 	port            int
@@ -101,7 +103,7 @@ func (c *AgentClient) Execute(ctx context.Context, podIP, token string, req Exec
 	if err != nil {
 		return nil, classifyDoError(err, op, url)
 	}
-	defer resp.Body.Close() //nolint:errcheck // body close errors are not actionable
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &StatusError{
@@ -166,7 +168,7 @@ func (c *AgentClient) Assign(ctx context.Context, podIP string, req AssignReques
 	if err != nil {
 		return classifyDoError(err, op, url)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return &StatusError{
@@ -194,7 +196,7 @@ func (c *AgentClient) HealthCheck(ctx context.Context, podIP string) error {
 	if err != nil {
 		return classifyDoError(err, op, url)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return &StatusError{

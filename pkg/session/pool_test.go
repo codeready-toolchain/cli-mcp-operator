@@ -61,7 +61,7 @@ func TestBuildWarmPodSpec(t *testing.T) {
 	pod := pool.buildWarmPodSpec()
 
 	// then — uses a generated unique name with the standard prefix
-	assert.True(t, len(pod.Name) > len(podNamePrefix), "name should have a random suffix")
+	assert.Greater(t, len(pod.Name), len(podNamePrefix), "name should have a random suffix")
 	assert.Contains(t, pod.Name, podNamePrefix)
 	assert.Empty(t, pod.GenerateName, "should use Name, not GenerateName")
 	assert.Equal(t, testNamespace, pod.Namespace)
@@ -465,7 +465,7 @@ func TestStartReconciler(t *testing.T) {
 			LabelSelector: unassignedSelector(),
 		})
 		require.NoError(t, err)
-		assert.Equal(t, 3, len(pods.Items))
+		assert.Len(t, pods.Items, 3)
 	})
 
 	t.Run("exits on context cancellation", func(t *testing.T) {
@@ -567,7 +567,7 @@ func TestGetOrCreatePodWithPool(t *testing.T) {
 		_, getErr := mgr.GetOrCreatePod(ctx, "session-fallback")
 
 		// then — expect timeout error from waitForReady (on-demand path was taken)
-		assert.Error(t, getErr)
+		require.Error(t, getErr)
 
 		// then — verify on-demand pod was created (proves fallback happened)
 		pods, listErr := client.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{

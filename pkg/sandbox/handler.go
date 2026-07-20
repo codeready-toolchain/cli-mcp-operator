@@ -80,7 +80,9 @@ type ErrorResponse struct {
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(ErrorResponse{Error: msg})
+	if err := json.NewEncoder(w).Encode(ErrorResponse{Error: msg}); err != nil {
+		return
+	}
 }
 
 // HandleHealth is an unauthenticated readiness probe.
@@ -89,11 +91,15 @@ func (h *Handler) HandleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if h.session.IsAlive() {
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
+			return
+		}
 		return
 	}
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy"})
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "unhealthy"}); err != nil {
+		return
+	}
 }
 
 // HandleExec executes a command in the persistent bash session.
@@ -142,7 +148,9 @@ func (h *Handler) HandleExec(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		return
+	}
 }
 
 // HandleAssign delivers an auth token to a warm-pool pod, transitioning

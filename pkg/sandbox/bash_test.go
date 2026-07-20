@@ -249,9 +249,9 @@ func TestIdleCrashRecovery(t *testing.T) {
 	assert.Equal(t, "before_crash", res.Stdout)
 
 	bs.mu.Lock()
-	if err := bs.cmd.Process.Kill(); err != nil {
+	if killErr := bs.cmd.Process.Kill(); killErr != nil {
 		bs.mu.Unlock()
-		t.Fatalf("failed to kill bash: %v", err)
+		t.Fatalf("failed to kill bash: %v", killErr)
 	}
 	bs.cmd.Wait() //nolint:errcheck
 	bs.mu.Unlock()

@@ -31,7 +31,8 @@ const (
 	annotationCreatedAt    = "tarsy.redhat.com/created-at"
 	annotationLastActivity = "tarsy.redhat.com/last-activity"
 
-	podNamePrefix    = "cli-mcp-sandbox-"
+	podNamePrefix = "cli-mcp-sandbox-"
+	//nolint:gosec // G101: K8s resource names, not credentials
 	secretNamePrefix = "cli-mcp-sandbox-auth-"
 
 	readyPollPeriod = 2 * time.Second
@@ -42,6 +43,8 @@ var sessionIDRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // SessionManager handles sandbox pod lifecycle: discovery, creation,
 // command proxying, and cleanup.
+//
+//nolint:revive // name matches design docs
 type SessionManager struct {
 	clientset   kubernetes.Interface
 	config      SandboxConfig
@@ -118,8 +121,8 @@ func ValidateSessionID(sessionID string) error {
 // GetOrCreatePod resolves or creates a sandbox pod for the session.
 // Lookup order: cache → label-based K8s API discovery → idempotent create.
 func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (podIP string, err error) {
-	if err := ValidateSessionID(sessionID); err != nil {
-		return "", err
+	if validationErr := ValidateSessionID(sessionID); validationErr != nil {
+		return "", validationErr
 	}
 
 	if ip, _, ok := m.cache.Get(sessionID); ok {
@@ -136,10 +139,10 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	}
 
 	if m.pool != nil {
-		ip, podName, claimErr := m.pool.ClaimPod(ctx, sessionID)
+		claimedIP, claimedPodName, claimErr := m.pool.ClaimPod(ctx, sessionID)
 		if claimErr == nil {
-			m.cache.Set(sessionID, ip, podName)
-			return ip, nil
+			m.cache.Set(sessionID, claimedIP, claimedPodName)
+			return claimedIP, nil
 		}
 		m.logger.Info("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
 	}
@@ -270,7 +273,7 @@ func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
 								Path: "/health",
-								Port: intstr.FromInt32(int32(config.AgentPort)),
+								Port: intstr.FromInt32(int32(config.AgentPort)), //nolint:gosec // G115: port in valid range
 							},
 						},
 						InitialDelaySeconds: 2,
@@ -531,4 +534,3 @@ func (m *SessionManager) CleanupStale(ctx context.Context) (int, error) {
 
 	return cleaned, nil
 }
-

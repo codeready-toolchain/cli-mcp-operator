@@ -48,9 +48,14 @@ func TestExecute(t *testing.T) {
 			gotPath = r.URL.Path
 			gotAuth = r.Header.Get("Authorization")
 			gotCT = r.Header.Get("Content-Type")
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotReq))
+			if decodeErr := json.NewDecoder(r.Body).Decode(&gotReq); decodeErr != nil {
+				t.Errorf("decode request: %v", decodeErr)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
-			require.NoError(t, json.NewEncoder(w).Encode(expected))
+			if encodeErr := json.NewEncoder(w).Encode(expected); encodeErr != nil {
+				t.Errorf("encode response: %v", encodeErr)
+			}
 		}))
 		t.Cleanup(ts.Close)
 		client, host := newTestClient(t, ts)
@@ -121,7 +126,7 @@ func TestExecute(t *testing.T) {
 		assert.Equal(t, "execute", decodeErr.Op)
 		assert.Equal(t, http.StatusOK, decodeErr.StatusCode)
 		assert.Equal(t, "not-json", decodeErr.Body)
-		assert.NotNil(t, decodeErr.Err)
+		assert.Error(t, decodeErr.Err)
 	})
 
 	t.Run("connection refused returns NetworkError", func(t *testing.T) {
@@ -137,13 +142,13 @@ func TestExecute(t *testing.T) {
 		require.ErrorAs(t, err, &netErr)
 		assert.Equal(t, "execute", netErr.Op)
 		assert.Contains(t, netErr.URL, "127.0.0.1:1/exec")
-		assert.NotNil(t, netErr.Err)
+		assert.Error(t, netErr.Err)
 	})
 
 	t.Run("context deadline returns NetworkError wrapping DeadlineExceeded", func(t *testing.T) {
 		// given
 		release := make(chan struct{})
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ts := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			<-release
 		}))
 		t.Cleanup(func() {
@@ -162,14 +167,14 @@ func TestExecute(t *testing.T) {
 		var netErr *NetworkError
 		require.ErrorAs(t, err, &netErr)
 		assert.Equal(t, "execute", netErr.Op)
-		assert.True(t, errors.Is(err, context.DeadlineExceeded))
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 
 	t.Run("context cancellation returns NetworkError wrapping Canceled", func(t *testing.T) {
 		// given
 		started := make(chan struct{})
 		release := make(chan struct{})
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ts := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			close(started)
 			<-release
 		}))
@@ -194,7 +199,7 @@ func TestExecute(t *testing.T) {
 		// then
 		var netErr *NetworkError
 		require.ErrorAs(t, err, &netErr)
-		assert.True(t, errors.Is(err, context.Canceled))
+		assert.ErrorIs(t, err, context.Canceled)
 	})
 
 	t.Run("response exceeding max size returns DecodeError", func(t *testing.T) {
@@ -228,7 +233,10 @@ func TestAssign(t *testing.T) {
 			gotPath = r.URL.Path
 			gotAuth = r.Header.Get("Authorization")
 			gotCT = r.Header.Get("Content-Type")
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotReq))
+			if decodeErr := json.NewDecoder(r.Body).Decode(&gotReq); decodeErr != nil {
+				t.Errorf("decode request: %v", decodeErr)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 		}))
 		t.Cleanup(ts.Close)
@@ -343,7 +351,7 @@ func TestNewAgentClientOptions(t *testing.T) {
 		assert.Equal(t, 30*time.Second, c.httpClient.Timeout)
 		assert.Equal(t, 8090, c.port)
 		assert.Equal(t, DefaultMaxResponseSize, c.maxResponseSize)
-		assert.Equal(t, int64(10*1024*1024), DefaultMaxResponseSize)
+		assert.Equal(t, DefaultMaxResponseSize, int64(10*1024*1024))
 	})
 
 	t.Run("WithTimeout overrides timeout", func(t *testing.T) {
@@ -417,7 +425,7 @@ func TestErrorTypes(t *testing.T) {
 		err := &NetworkError{Op: "execute", URL: "http://x/exec", Err: context.DeadlineExceeded}
 
 		// then
-		assert.True(t, errors.Is(err, context.DeadlineExceeded))
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 		assert.Equal(t, "execute http://x/exec: context deadline exceeded", err.Error())
 	})
 
@@ -427,7 +435,7 @@ func TestErrorTypes(t *testing.T) {
 		err := &DecodeError{Op: "execute", URL: "http://x/exec", StatusCode: 200, Err: inner, Body: "x"}
 
 		// then
-		assert.True(t, errors.Is(err, inner))
+		require.ErrorIs(t, err, inner)
 		assert.Equal(t, "execute http://x/exec: invalid character", err.Error())
 	})
 
@@ -436,7 +444,7 @@ func TestErrorTypes(t *testing.T) {
 		err := &StatusError{Op: "assign", URL: "http://x/assign", StatusCode: 409, Body: "conflict"}
 
 		// then
-		assert.Nil(t, errors.Unwrap(err))
+		require.NoError(t, errors.Unwrap(err))
 		assert.Equal(t, "assign http://x/assign: unexpected status 409", err.Error())
 	})
 

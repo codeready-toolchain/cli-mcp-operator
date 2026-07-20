@@ -33,7 +33,7 @@ func newRequestWithSessionID(sessionID string) *mcp.CallToolRequest {
 func TestBashToolHandle(t *testing.T) {
 	t.Run("missing session header — nil Extra", func(t *testing.T) {
 		// given
-		executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+		executor := &mockExecutor{execFn: func(_ context.Context, _, _ string, _ int) (*agent.ExecResponse, error) {
 			t.Fatal("executor should not be called")
 			return nil, nil
 		}}
@@ -50,7 +50,7 @@ func TestBashToolHandle(t *testing.T) {
 
 	t.Run("missing session header — empty value", func(t *testing.T) {
 		// given
-		executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+		executor := &mockExecutor{execFn: func(_ context.Context, _, _ string, _ int) (*agent.ExecResponse, error) {
 			t.Fatal("executor should not be called")
 			return nil, nil
 		}}
@@ -69,7 +69,7 @@ func TestBashToolHandle(t *testing.T) {
 
 	t.Run("empty command", func(t *testing.T) {
 		// given
-		executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+		executor := &mockExecutor{execFn: func(_ context.Context, _, _ string, _ int) (*agent.ExecResponse, error) {
 			t.Fatal("executor should not be called")
 			return nil, nil
 		}}
@@ -88,7 +88,7 @@ func TestBashToolHandle(t *testing.T) {
 		// given
 		var gotSessionID, gotCommand string
 		var gotTimeout int
-		executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+		executor := &mockExecutor{execFn: func(_ context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
 			gotSessionID = sessionID
 			gotCommand = command
 			gotTimeout = timeoutSec
@@ -109,7 +109,7 @@ func TestBashToolHandle(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, result)
 		assert.Equal(t, "hello", output.Stdout)
-		assert.Equal(t, "", output.Stderr)
+		assert.Empty(t, output.Stderr)
 		assert.Equal(t, 0, output.ExitCode)
 		assert.Equal(t, int64(42), output.DurationMs)
 		assert.Equal(t, "inv-abc", gotSessionID)
@@ -119,7 +119,7 @@ func TestBashToolHandle(t *testing.T) {
 
 	t.Run("non-zero exit code — IsError true with output", func(t *testing.T) {
 		// given
-		executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+		executor := &mockExecutor{execFn: func(_ context.Context, _, _ string, _ int) (*agent.ExecResponse, error) {
 			return &agent.ExecResponse{
 				Stdout:     "",
 				Stderr:     "not found",
@@ -144,7 +144,7 @@ func TestBashToolHandle(t *testing.T) {
 
 	t.Run("executor error — infrastructure failure", func(t *testing.T) {
 		// given
-		executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+		executor := &mockExecutor{execFn: func(_ context.Context, _, _ string, _ int) (*agent.ExecResponse, error) {
 			return nil, fmt.Errorf("resolve pod: connection refused")
 		}}
 		tool := NewBashTool(executor)
@@ -162,7 +162,7 @@ func TestBashToolHandle(t *testing.T) {
 	t.Run("session ID forwarded unchanged", func(t *testing.T) {
 		// given
 		var gotSessionID string
-		executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+		executor := &mockExecutor{execFn: func(_ context.Context, sessionID, _ string, _ int) (*agent.ExecResponse, error) {
 			gotSessionID = sessionID
 			return &agent.ExecResponse{ExitCode: 0}, nil
 		}}
@@ -206,7 +206,7 @@ func TestClampTimeout(t *testing.T) {
 
 func TestRegisterWith(t *testing.T) {
 	// given
-	executor := &mockExecutor{execFn: func(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error) {
+	executor := &mockExecutor{execFn: func(_ context.Context, _, _ string, _ int) (*agent.ExecResponse, error) {
 		return &agent.ExecResponse{ExitCode: 0}, nil
 	}}
 	tool := NewBashTool(executor)
@@ -220,8 +220,8 @@ func TestRegisterWith(t *testing.T) {
 	ss, err := server.Connect(context.Background(), st, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		if err := ss.Close(); err != nil {
-			t.Errorf("ServerSession.Close: %v", err)
+		if closeErr := ss.Close(); closeErr != nil {
+			t.Errorf("ServerSession.Close: %v", closeErr)
 		}
 	})
 
@@ -229,8 +229,8 @@ func TestRegisterWith(t *testing.T) {
 	cs, err := client.Connect(context.Background(), ct, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		if err := cs.Close(); err != nil {
-			t.Errorf("ClientSession.Close: %v", err)
+		if closeErr := cs.Close(); closeErr != nil {
+			t.Errorf("ClientSession.Close: %v", closeErr)
 		}
 	})
 

@@ -40,8 +40,9 @@ func main() {
 	mux.HandleFunc("GET /health", handler.HandleHealth)
 
 	srv := &http.Server{
-		Addr:    ":8090",
-		Handler: mux,
+		Addr:              ":8090",
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	go func() {

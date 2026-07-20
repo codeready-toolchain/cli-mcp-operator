@@ -248,7 +248,7 @@ func TestGetOrCreatePod(t *testing.T) {
 		_, err := mgr.GetOrCreatePod(context.Background(), "INVALID_ID")
 
 		// then
-		assert.Error(t, err)
+		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid session ID")
 	})
 
@@ -526,7 +526,10 @@ func TestExecuteCommand(t *testing.T) {
 			assert.True(t, strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "))
 
 			var req agent.ExecRequest
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+			if decodeErr := json.NewDecoder(r.Body).Decode(&req); decodeErr != nil {
+				t.Errorf("decode request: %v", decodeErr)
+				return
+			}
 			assert.Equal(t, "echo hello", req.Command)
 			assert.Equal(t, 60, req.Timeout)
 

@@ -8,14 +8,15 @@ on:
 
 jobs:
   build-test-coverage:
+    name: Build and Test
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version-file: go.mod
 
@@ -30,3 +31,52 @@ jobs:
 
     - name: Run tests with coverage
       run: make test-coverage
+
+  build-image:
+    # Verify images build on PRs; push happens in the CD workflow on master.
+    name: Build Image (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cli-mcp-server
+            image: codeready-toolchain/cli-mcp-server
+            containerfile: Containerfile.server
+          - name: cli-mcp-sandbox
+            image: codeready-toolchain/cli-mcp-sandbox
+            containerfile: Containerfile.agent
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Build image
+      uses: redhat-actions/buildah-build@v2
+      with:
+        image: ${{ matrix.image }}
+        tags: latest
+        containerfiles: |
+          ${{ matrix.containerfile }}
+        platforms: linux/amd64
+        build-args: |
+          GIT_COMMIT=${{ github.sha }}
+          BUILD_TIME=ci
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+
+    - name: Lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: latest
+        args: --config=./.golangci.yml --verbose
