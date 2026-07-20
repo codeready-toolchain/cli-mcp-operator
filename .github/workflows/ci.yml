@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Build and Test
+  # Job id must stay build-test-coverage: it is a required status check on the repo.
+  build-test-coverage:
     runs-on: ubuntu-latest
 
     steps:
