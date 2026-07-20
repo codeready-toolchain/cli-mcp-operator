@@ -608,7 +608,7 @@ func TestExecuteCommand(t *testing.T) {
 
 		started := make(chan struct{})
 		release := make(chan struct{})
-		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			close(started)
 			<-release
 			w.Header().Set("Content-Type", "application/json")

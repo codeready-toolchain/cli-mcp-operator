@@ -465,14 +465,16 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 	}
 
 	if podName != "" {
-		go m.updateLastActivity(podName)
+		// WithoutCancel: keep the request-derived context for gosec G118, but do not
+		// cancel the annotation patch when the caller context ends.
+		go m.updateLastActivity(context.WithoutCancel(ctx), podName)
 	}
 
 	return execResp, nil
 }
 
-func (m *SessionManager) updateLastActivity(podName string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (m *SessionManager) updateLastActivity(ctx context.Context, podName string) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC().Format(time.RFC3339)
