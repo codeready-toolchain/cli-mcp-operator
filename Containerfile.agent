@@ -29,7 +29,7 @@ RUN case "${TARGETARCH}" in \
     YQ_BASE="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}" && \
     curl -fsSL "${YQ_BASE}/yq_linux_${YQ_ARCH}" -o /usr/bin/yq && \
     curl -fsSL "${YQ_BASE}/checksums-bsd" -o /tmp/checksums-bsd && \
-    grep "^SHA-256 (yq_linux_${YQ_ARCH})" /tmp/checksums-bsd | awk -F'= ' '{print $2 "  /usr/bin/yq"}' | sha256sum -c - && \
+    grep "^SHA256 (yq_linux_${YQ_ARCH})" /tmp/checksums-bsd | awk -F'= ' '{print $2 "  /usr/bin/yq"}' | sha256sum -c - && \
     chmod +x /usr/bin/yq && \
     rm -f /tmp/checksums-bsd
 
