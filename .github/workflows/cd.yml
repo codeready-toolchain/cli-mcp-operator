@@ -1,0 +1,68 @@
+name: CD - Build & Push Images
+
+on:
+  push:
+    branches:
+      - master
+
+env:
+  IMAGE_REGISTRY: quay.io
+  REGISTRY_USER: "codeready-toolchain+push"
+
+jobs:
+  build-and-push:
+    name: Build and Push ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cli-mcp-server
+            image: codeready-toolchain/cli-mcp-server
+            containerfile: Containerfile.server
+          - name: cli-mcp-sandbox
+            image: codeready-toolchain/cli-mcp-sandbox
+            containerfile: Containerfile.agent
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set short SHA
+        run: echo "COMMIT_SHORT_SHA=$(git rev-parse --short ${GITHUB_SHA})" >> "${GITHUB_ENV}"
+
+      - name: Set build time
+        run: echo "BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_ENV}"
+
+      - name: Build image
+        id: build-image
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ matrix.image }}
+          tags: latest ${{ env.COMMIT_SHORT_SHA }}
+          containerfiles: |
+            ${{ matrix.containerfile }}
+          platforms: linux/amd64
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ env.BUILD_TIME }}
+
+      - name: Log into quay.io
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Push image to quay.io
+        id: push-to-quay
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: ${{ env.IMAGE_REGISTRY }}
+
+      - name: Print image url
+        run: echo "Image pushed to ${{ steps.push-to-quay.outputs.registry-paths }}"

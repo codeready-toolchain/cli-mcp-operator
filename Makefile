@@ -1,5 +1,5 @@
 include ./make/*.mk
-.PHONY: build build-server build-agent run test clean fmt lint deps build-prod help image-agent image-server
+.PHONY: build build-server build-agent run test vet clean fmt lint deps build-prod help image-agent image-server
 
 # Application name
 APP_NAME = cli-mcp-server
@@ -44,6 +44,10 @@ run:
 # Test the application
 test:
 	$(GOTEST) -v ./...
+
+# Vet the application
+vet:
+	$(GOCMD) vet ./...
 
 # Test with coverage
 test-coverage:
@@ -102,6 +106,7 @@ help:
 	@echo "  build-agent      - Build the sandbox agent binary"
 	@echo "  run              - Run the MCP server"
 	@echo "  test             - Run tests"
+	@echo "  vet              - Run go vet"
 	@echo "  test-coverage    - Run tests with coverage"
 	@echo "  clean            - Clean build artifacts"
 	@echo "  fmt              - Format code"
