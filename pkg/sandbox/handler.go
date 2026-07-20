@@ -3,6 +3,7 @@ package sandbox
 import (
 	"crypto/hmac"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,6 +14,18 @@ import (
 
 // maxRequestBody limits POST bodies for /exec and /assign.
 const maxRequestBody = 1 << 20 // 1 MiB
+
+// decodeJSONBody reads at most maxRequestBody bytes and unmarshals JSON into dst.
+// Unlike json.Decoder, this rejects trailing data and enforces the size limit
+// on the complete request body.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, dst)
+}
 
 // AgentState manages the unassigned/assigned lifecycle of the sandbox agent.
 // Warm-pool pods start unassigned; on-demand pods start assigned (token from env).
@@ -124,9 +137,8 @@ func (h *Handler) HandleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var req agent.ExecRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -160,9 +172,8 @@ func (h *Handler) HandleExec(w http.ResponseWriter, r *http.Request) {
 // HandleAssign delivers an auth token to a warm-pool pod, transitioning
 // it from unassigned to assigned. Can only be called once (409 on repeat).
 func (h *Handler) HandleAssign(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var req agent.AssignRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

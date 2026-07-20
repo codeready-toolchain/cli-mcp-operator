@@ -141,8 +141,16 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	if m.pool != nil {
 		claimedIP, claimedPodName, claimErr := m.pool.ClaimPod(ctx, sessionID)
 		if claimErr == nil {
-			m.cache.Set(sessionID, claimedIP, claimedPodName)
-			return claimedIP, nil
+			// Claim only guarantees IP + /assign; wait for PodReady before caching.
+			readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
+			if readyErr != nil {
+				return "", fmt.Errorf("warm pool pod not ready after claim: %w", readyErr)
+			}
+			if readyIP == "" {
+				readyIP = claimedIP
+			}
+			m.cache.Set(sessionID, readyIP, claimedPodName)
+			return readyIP, nil
 		}
 		m.logger.Info("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
 	}
@@ -363,6 +371,23 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 	ticker := time.NewTicker(readyPollPeriod)
 	defer ticker.Stop()
 
+	check := func() (string, bool, error) {
+		pod, err := m.clientset.CoreV1().Pods(m.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return "", false, fmt.Errorf("get pod %q: %w", podName, err)
+		}
+		if isPodReady(pod) {
+			return pod.Status.PodIP, true, nil
+		}
+		return "", false, nil
+	}
+
+	if ip, ready, err := check(); err != nil {
+		return "", err
+	} else if ready {
+		return ip, nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -370,12 +395,12 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 		case <-deadline:
 			return "", fmt.Errorf("pod %q not ready within %s", podName, readyTimeout)
 		case <-ticker.C:
-			pod, err := m.clientset.CoreV1().Pods(m.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+			ip, ready, err := check()
 			if err != nil {
-				return "", fmt.Errorf("get pod %q: %w", podName, err)
+				return "", err
 			}
-			if isPodReady(pod) {
-				return pod.Status.PodIP, nil
+			if ready {
+				return ip, nil
 			}
 		}
 	}

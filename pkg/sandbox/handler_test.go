@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,9 +172,11 @@ func TestHandleExec(t *testing.T) {
 	})
 
 	t.Run("rejects oversized request body", func(t *testing.T) {
-		// given
+		// given — valid JSON whose encoded size exceeds maxRequestBody
 		h := newTestHandler(t, "secret")
-		body := bytes.Repeat([]byte("x"), maxRequestBody+1)
+		body, err := json.Marshal(agent.ExecRequest{Command: strings.Repeat("x", maxRequestBody)})
+		require.NoError(t, err)
+		require.Greater(t, len(body), maxRequestBody)
 		req := httptest.NewRequestWithContext(testContext(t), http.MethodPost, "/exec", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer secret")
 		rec := httptest.NewRecorder()
@@ -186,6 +189,23 @@ func TestHandleExec(t *testing.T) {
 		var resp ErrorResponse
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 		assert.Equal(t, "invalid request body", resp.Error)
+	})
+
+	t.Run("rejects trailing data after valid JSON", func(t *testing.T) {
+		// given
+		h := newTestHandler(t, "secret")
+		body, err := json.Marshal(agent.ExecRequest{Command: "echo ok"})
+		require.NoError(t, err)
+		body = append(body, []byte(`{"extra":true}`)...)
+		req := httptest.NewRequestWithContext(testContext(t), http.MethodPost, "/exec", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+
+		// when
+		h.HandleExec(rec, req)
+
+		// then
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
 	t.Run("executes command and returns stdout", func(t *testing.T) {
@@ -314,6 +334,26 @@ func TestHandleAssign(t *testing.T) {
 		var resp ErrorResponse
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 		assert.Equal(t, "invalid request body", resp.Error)
+	})
+
+	t.Run("rejects oversized request body", func(t *testing.T) {
+		// given — valid JSON whose encoded size exceeds maxRequestBody
+		h := newTestHandler(t, "")
+		body, err := json.Marshal(agent.AssignRequest{Token: strings.Repeat("t", maxRequestBody)})
+		require.NoError(t, err)
+		require.Greater(t, len(body), maxRequestBody)
+		req := httptest.NewRequestWithContext(testContext(t), http.MethodPost, "/assign", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		// when
+		h.HandleAssign(rec, req)
+
+		// then
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		var resp ErrorResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "invalid request body", resp.Error)
+		assert.False(t, h.state.IsAssigned())
 	})
 
 	t.Run("rejects empty token", func(t *testing.T) {
