@@ -596,4 +596,52 @@ func TestExecuteCommand(t *testing.T) {
 		_, _, ok := mgr.cache.Get("inv-transport")
 		assert.False(t, ok, "cache entry should be invalidated on transport error")
 	})
+
+	t.Run("updates last-activity even if cache expires during Execute", func(t *testing.T) {
+		// given — expire the cache while the agent request is in flight
+		createdAt := time.Now().UTC().Add(-time.Minute)
+		pod := readyPod("inv-activity", "127.0.0.1", createdAt)
+		oldActivity := createdAt.Format(time.RFC3339)
+
+		started := make(chan struct{})
+		release := make(chan struct{})
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			close(started)
+			<-release
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agent.ExecResponse{Stdout: "ok", ExitCode: 0})
+		}))
+		t.Cleanup(ts.Close)
+
+		mgr := newTestManager(t, pod)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.cache.Set("inv-activity", "127.0.0.1", pod.Name)
+
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := mgr.ExecuteCommand(context.Background(), "inv-activity", "sleep 1", 60)
+			errCh <- err
+		}()
+
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("agent request did not start")
+		}
+		mgr.cache.Delete("inv-activity")
+		close(release)
+
+		// when / then
+		require.NoError(t, <-errCh)
+		require.Eventually(t, func() bool {
+			updated, getErr := mgr.clientset.CoreV1().Pods(testNamespace).Get(
+				context.Background(), pod.Name, metav1.GetOptions{},
+			)
+			if getErr != nil {
+				return false
+			}
+			return updated.Annotations[annotationLastActivity] != oldActivity
+		}, time.Second, 10*time.Millisecond, "last-activity should be patched using pre-Execute podName")
+	})
 }

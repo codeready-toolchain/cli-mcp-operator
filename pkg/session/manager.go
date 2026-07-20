@@ -422,6 +422,8 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 	}
 
 	token := computeToken(m.config.HMACKey, sessionID)
+	// Capture podName before Execute: cache TTL can expire during long-running commands.
+	_, podName, _ := m.cache.Get(sessionID)
 	execResp, err := m.agentClient.Execute(ctx, podIP, token, agent.ExecRequest{
 		Command: command,
 		Timeout: timeoutSec,
@@ -434,8 +436,9 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 		return nil, fmt.Errorf("agent request: %w", err)
 	}
 
-	_, podName, _ := m.cache.Get(sessionID)
-	go m.updateLastActivity(podName)
+	if podName != "" {
+		go m.updateLastActivity(podName)
+	}
 
 	return execResp, nil
 }
