@@ -257,12 +257,14 @@ func TestGetOrCreatePod(t *testing.T) {
 		sessionID := "inv-ondemand"
 		mgr := newTestManager(t)
 		ctx := context.Background()
-		go markPodReady(t, mgr, sessionID, "10.0.0.99")
+		done := make(chan error, 1)
+		go func() { done <- markPodReady(mgr, sessionID, "10.0.0.99") }()
 
 		// when
 		ip, err := mgr.GetOrCreatePod(ctx, sessionID)
 
 		// then
+		require.NoError(t, <-done)
 		require.NoError(t, err)
 		assert.Equal(t, "10.0.0.99", ip)
 		cachedIP, _, ok := mgr.cache.Get(sessionID)
@@ -296,8 +298,7 @@ func TestGetOrCreatePod(t *testing.T) {
 }
 
 // markPodReady updates a newly created sandbox pod to Running/Ready so waitForReady can succeed.
-func markPodReady(t *testing.T, mgr *SessionManager, sessionID, ip string) {
-	t.Helper()
+func markPodReady(mgr *SessionManager, sessionID, ip string) error {
 	ctx := context.Background()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -311,9 +312,10 @@ func markPodReady(t *testing.T, mgr *SessionManager, sessionID, ip string) {
 		pod.Status.Conditions = []corev1.PodCondition{
 			{Type: corev1.PodReady, Status: corev1.ConditionTrue},
 		}
-		_, _ = mgr.clientset.CoreV1().Pods(testNamespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{})
-		return
+		_, err = mgr.clientset.CoreV1().Pods(testNamespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		return err
 	}
+	return fmt.Errorf("pod %s not found before deadline", podNamePrefix+sessionID)
 }
 
 func TestBuildPodSpec(t *testing.T) {
@@ -576,7 +578,7 @@ func TestExecuteCommand(t *testing.T) {
 
 	t.Run("transport failure invalidates cache", func(t *testing.T) {
 		// given — cache points at localhost; AgentPort has nothing listening
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 		require.NoError(t, err)
 		closedPort := ln.Addr().(*net.TCPAddr).Port
 		require.NoError(t, ln.Close())
