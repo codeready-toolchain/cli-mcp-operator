@@ -11,6 +11,9 @@ import (
 	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
 )
 
+// maxRequestBody limits POST bodies for /exec and /assign.
+const maxRequestBody = 1 << 20 // 1 MiB
+
 // AgentState manages the unassigned/assigned lifecycle of the sandbox agent.
 // Warm-pool pods start unassigned; on-demand pods start assigned (token from env).
 type AgentState struct {
@@ -121,6 +124,7 @@ func (h *Handler) HandleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var req agent.ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -156,6 +160,7 @@ func (h *Handler) HandleExec(w http.ResponseWriter, r *http.Request) {
 // HandleAssign delivers an auth token to a warm-pool pod, transitioning
 // it from unassigned to assigned. Can only be called once (409 on repeat).
 func (h *Handler) HandleAssign(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var req agent.AssignRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

@@ -170,6 +170,24 @@ func TestHandleExec(t *testing.T) {
 		assert.Equal(t, "command is required", resp.Error)
 	})
 
+	t.Run("rejects oversized request body", func(t *testing.T) {
+		// given
+		h := newTestHandler(t, "secret")
+		body := bytes.Repeat([]byte("x"), maxRequestBody+1)
+		req := httptest.NewRequestWithContext(testContext(t), http.MethodPost, "/exec", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer secret")
+		rec := httptest.NewRecorder()
+
+		// when
+		h.HandleExec(rec, req)
+
+		// then
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		var resp ErrorResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "invalid request body", resp.Error)
+	})
+
 	t.Run("executes command and returns stdout", func(t *testing.T) {
 		// given
 		h := newTestHandler(t, "secret")

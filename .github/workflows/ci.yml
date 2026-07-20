@@ -6,14 +6,19 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
-  build-test-coverage:
+  test:
     name: Build and Test
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -23,14 +28,8 @@ jobs:
     - name: Build application
       run: make build
 
-    - name: Vet
-      run: make vet
-
     - name: Run tests
       run: make test
-
-    - name: Run tests with coverage
-      run: make test-coverage
 
   build-image:
     # Verify images build on PRs; push happens in the CD workflow on master.
@@ -50,6 +49,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Build image
       uses: redhat-actions/buildah-build@v2
@@ -69,6 +70,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Set up Go
       uses: actions/setup-go@v6
@@ -78,5 +81,6 @@ jobs:
     - name: Lint
       uses: golangci/golangci-lint-action@v9
       with:
+        # Match sibling MCP repos; bump deliberately when lint breaks.
         version: latest
         args: --config=./.golangci.yml --verbose

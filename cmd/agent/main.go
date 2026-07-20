@@ -43,6 +43,9 @@ func main() {
 		Addr:              ":8090",
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		// WriteTimeout intentionally unset: /exec may run up to MaxTimeout (300s).
 	}
 
 	go func() {
