@@ -1,16 +1,13 @@
 package session
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"regexp"
 	"sort"
@@ -46,15 +43,15 @@ var sessionIDRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // SessionManager handles sandbox pod lifecycle: discovery, creation,
 // command proxying, and cleanup.
 type SessionManager struct {
-	clientset  kubernetes.Interface
-	config     SandboxConfig
-	cache      *PodCache
-	pool       *WarmPool
-	httpClient *http.Client
-	logger     *slog.Logger
+	clientset   kubernetes.Interface
+	config      SandboxConfig
+	cache       *PodCache
+	pool        *WarmPool
+	agentClient *agent.AgentClient
+	logger      *slog.Logger
 }
 
-// NewSessionManager creates a SessionManager with a default PodCache and HTTP client.
+// NewSessionManager creates a SessionManager with a default PodCache and agent client.
 // It returns an error if required config fields (HMACKey, Image) are missing.
 func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, logger *slog.Logger) (*SessionManager, error) {
 	if config.HMACKey == "" {
@@ -67,11 +64,15 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 		logger = slog.Default()
 	}
 	mgr := &SessionManager{
-		clientset:  clientset,
-		config:     config,
-		cache:      NewPodCache(defaultCacheTTL),
-		httpClient: &http.Client{Timeout: 0},
-		logger:     logger,
+		clientset: clientset,
+		config:    config,
+		cache:     NewPodCache(defaultCacheTTL),
+		// Timeout 0: command duration is bounded by the ExecRequest timeout, not the HTTP client.
+		agentClient: agent.NewAgentClient(
+			agent.WithPort(config.AgentPort),
+			agent.WithTimeout(0),
+		),
+		logger: logger,
 	}
 	if config.WarmPoolSize > 0 {
 		mgr.pool = NewWarmPool(clientset, config, logger)
@@ -92,9 +93,13 @@ func (m *SessionManager) Pool() *WarmPool {
 	return m.pool
 }
 
-// SetHTTPClient replaces the default HTTP client (useful for testing).
+// SetHTTPClient replaces the agent client's underlying HTTP client (useful for testing).
+// The provided client's timeout is preserved (do not override with WithTimeout).
 func (m *SessionManager) SetHTTPClient(c *http.Client) {
-	m.httpClient = c
+	m.agentClient = agent.NewAgentClient(
+		agent.WithHTTPClient(c),
+		agent.WithPort(m.config.AgentPort),
+	)
 }
 
 // SetCache replaces the default PodCache (useful for testing).
@@ -417,61 +422,25 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 	}
 
 	token := computeToken(m.config.HMACKey, sessionID)
-
-	reqBody := agent.ExecRequest{
+	// Capture podName before Execute: cache TTL can expire during long-running commands.
+	_, podName, _ := m.cache.Get(sessionID)
+	execResp, err := m.agentClient.Execute(ctx, podIP, token, agent.ExecRequest{
 		Command: command,
 		Timeout: timeoutSec,
-	}
-	bodyBytes, err := json.Marshal(reqBody)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal exec request: %w", err)
-	}
-
-	host := net.JoinHostPort(podIP, fmt.Sprintf("%d", m.config.AgentPort))
-	url := fmt.Sprintf("http://%s/exec", host)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("create http request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := m.httpClient.Do(httpReq)
-	if err != nil {
-		if isTransportError(err) {
+		var netErr *agent.NetworkError
+		if errors.As(err, &netErr) {
 			m.cache.Invalidate(sessionID, podIP)
 		}
 		return nil, fmt.Errorf("agent request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("agent returned status %d", resp.StatusCode)
+	if podName != "" {
+		go m.updateLastActivity(podName)
 	}
 
-	var execResp agent.ExecResponse
-	if err := json.NewDecoder(resp.Body).Decode(&execResp); err != nil {
-		return nil, fmt.Errorf("decode exec response: %w", err)
-	}
-
-	_, podName, _ := m.cache.Get(sessionID)
-	go m.updateLastActivity(podName)
-
-	return &execResp, nil
-}
-
-// isTransportError returns true for network-level failures that indicate the
-// pod may be unreachable (connection refused, timeout, DNS, network unreachable).
-func isTransportError(err error) bool {
-	var netErr *net.OpError
-	if errors.As(err, &netErr) {
-		return true
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var dnsErr *net.DNSError
-	return errors.As(err, &dnsErr)
+	return execResp, nil
 }
 
 func (m *SessionManager) updateLastActivity(podName string) {
