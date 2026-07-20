@@ -1,0 +1,12 @@
+.git
+bin/
+dist/
+temp/
+docs/
+openspec/
+.vscode/
+.idea/
+*.md
+*.log
+.cursor/
+.github/
