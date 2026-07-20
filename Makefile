@@ -52,7 +52,7 @@ vet:
 # Test with coverage
 test-coverage:
 	$(GOTEST) -v -coverprofile=coverage.out ./...
-	$(GOCMD) tool cover -html=coverage.out
+	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 
 # Clean build artifacts
 clean:

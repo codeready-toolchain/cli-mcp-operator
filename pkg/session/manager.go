@@ -31,7 +31,8 @@ const (
 	annotationCreatedAt    = "tarsy.redhat.com/created-at"
 	annotationLastActivity = "tarsy.redhat.com/last-activity"
 
-	podNamePrefix    = "cli-mcp-sandbox-"
+	podNamePrefix = "cli-mcp-sandbox-"
+	//nolint:gosec // G101: K8s resource names, not credentials
 	secretNamePrefix = "cli-mcp-sandbox-auth-"
 
 	readyPollPeriod = 2 * time.Second
@@ -42,6 +43,8 @@ var sessionIDRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // SessionManager handles sandbox pod lifecycle: discovery, creation,
 // command proxying, and cleanup.
+//
+//nolint:revive // name matches design docs
 type SessionManager struct {
 	clientset   kubernetes.Interface
 	config      SandboxConfig
@@ -118,8 +121,8 @@ func ValidateSessionID(sessionID string) error {
 // GetOrCreatePod resolves or creates a sandbox pod for the session.
 // Lookup order: cache → label-based K8s API discovery → idempotent create.
 func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (podIP string, err error) {
-	if err := ValidateSessionID(sessionID); err != nil {
-		return "", err
+	if validationErr := ValidateSessionID(sessionID); validationErr != nil {
+		return "", validationErr
 	}
 
 	if ip, _, ok := m.cache.Get(sessionID); ok {
@@ -136,10 +139,18 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	}
 
 	if m.pool != nil {
-		ip, podName, claimErr := m.pool.ClaimPod(ctx, sessionID)
+		claimedIP, claimedPodName, claimErr := m.pool.ClaimPod(ctx, sessionID)
 		if claimErr == nil {
-			m.cache.Set(sessionID, ip, podName)
-			return ip, nil
+			// Claim only guarantees IP + /assign; wait for PodReady before caching.
+			readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
+			if readyErr != nil {
+				return "", fmt.Errorf("warm pool pod not ready after claim: %w", readyErr)
+			}
+			if readyIP == "" {
+				readyIP = claimedIP
+			}
+			m.cache.Set(sessionID, readyIP, claimedPodName)
+			return readyIP, nil
 		}
 		m.logger.Info("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
 	}
@@ -270,7 +281,7 @@ func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
 								Path: "/health",
-								Port: intstr.FromInt32(int32(config.AgentPort)),
+								Port: intstr.FromInt32(int32(config.AgentPort)), //nolint:gosec // G115: port in valid range
 							},
 						},
 						InitialDelaySeconds: 2,
@@ -360,6 +371,23 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 	ticker := time.NewTicker(readyPollPeriod)
 	defer ticker.Stop()
 
+	check := func() (string, bool, error) {
+		pod, err := m.clientset.CoreV1().Pods(m.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return "", false, fmt.Errorf("get pod %q: %w", podName, err)
+		}
+		if isPodReady(pod) {
+			return pod.Status.PodIP, true, nil
+		}
+		return "", false, nil
+	}
+
+	if ip, ready, err := check(); err != nil {
+		return "", err
+	} else if ready {
+		return ip, nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -367,12 +395,12 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 		case <-deadline:
 			return "", fmt.Errorf("pod %q not ready within %s", podName, readyTimeout)
 		case <-ticker.C:
-			pod, err := m.clientset.CoreV1().Pods(m.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+			ip, ready, err := check()
 			if err != nil {
-				return "", fmt.Errorf("get pod %q: %w", podName, err)
+				return "", err
 			}
-			if isPodReady(pod) {
-				return pod.Status.PodIP, nil
+			if ready {
+				return ip, nil
 			}
 		}
 	}
@@ -437,14 +465,16 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 	}
 
 	if podName != "" {
-		go m.updateLastActivity(podName)
+		// WithoutCancel: keep the request-derived context for gosec G118, but do not
+		// cancel the annotation patch when the caller context ends.
+		go m.updateLastActivity(context.WithoutCancel(ctx), podName)
 	}
 
 	return execResp, nil
 }
 
-func (m *SessionManager) updateLastActivity(podName string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func (m *SessionManager) updateLastActivity(ctx context.Context, podName string) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -531,4 +561,3 @@ func (m *SessionManager) CleanupStale(ctx context.Context) (int, error) {
 
 	return cleaned, nil
 }
-

@@ -71,7 +71,7 @@ func TestSessionDelete(t *testing.T) {
 
 		// then
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
-		assert.Equal(t, "", cleaner.calledWith)
+		assert.Empty(t, cleaner.calledWith)
 	})
 
 	t.Run("returns 500 with generic body on cleanup error", func(t *testing.T) {
@@ -110,7 +110,7 @@ func TestSessionDelete(t *testing.T) {
 		// then
 		assert.Equal(t, http.StatusBadRequest, rr.Code)
 		assert.Contains(t, rr.Body.String(), "invalid session ID format")
-		assert.Equal(t, "", cleaner.calledWith)
+		assert.Empty(t, cleaner.calledWith)
 	})
 }
 

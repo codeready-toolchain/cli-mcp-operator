@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -56,7 +57,7 @@ type BashSession struct {
 }
 
 // NewBashSession spawns a persistent bash process.
-func NewBashSession(cfg BashConfig) (*BashSession, error) {
+func NewBashSession(_ BashConfig) (*BashSession, error) {
 	bs := &BashSession{}
 	if err := bs.spawn(); err != nil {
 		return nil, fmt.Errorf("failed to start bash: %w", err)
@@ -65,7 +66,7 @@ func NewBashSession(cfg BashConfig) (*BashSession, error) {
 }
 
 func (bs *BashSession) spawn() error {
-	cmd := exec.Command("bash", "--norc", "--noprofile")
+	cmd := exec.CommandContext(context.Background(), "bash", "--norc", "--noprofile")
 	cmd.Env = append(os.Environ(), "PS1=", "PS2=")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
@@ -102,7 +103,7 @@ func (bs *BashSession) reapProcess() {
 		return
 	}
 	if bs.stdin != nil {
-		bs.stdin.Close() //nolint:errcheck
+		_ = bs.stdin.Close()
 	}
 	_ = syscall.Kill(-bs.cmd.Process.Pid, syscall.SIGKILL)
 	bs.cmd.Wait() //nolint:errcheck
@@ -128,6 +129,8 @@ func (bs *BashSession) Close() error {
 
 // Execute runs a command in the persistent bash session with the given timeout.
 // If the bash process has crashed, it respawns automatically and reports the reset in stderr.
+//
+//nolint:gocyclo // delimiter protocol state machine
 func (bs *BashSession) Execute(command string, timeout time.Duration) (*ExecResult, error) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()

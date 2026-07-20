@@ -149,7 +149,7 @@ func TestPodCache_SetOverwritesExisting(t *testing.T) {
 	assert.Equal(t, "pod-new", name)
 }
 
-func TestPodCache_ConcurrentAccess(t *testing.T) {
+func TestPodCache_ConcurrentAccess(_ *testing.T) {
 	// given
 	cache := NewPodCache(5 * time.Second)
 	var wg sync.WaitGroup

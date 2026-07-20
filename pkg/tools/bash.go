@@ -110,4 +110,3 @@ func clampTimeout(t *int) int {
 	}
 	return *t
 }
-

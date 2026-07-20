@@ -236,7 +236,6 @@ func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID s
 	return ip, patched.Name, nil
 }
 
-
 // assignToken sends POST /assign to the agent running on the pod to deliver the HMAC token.
 func (p *WarmPool) assignToken(ctx context.Context, pod *corev1.Pod, token string) error {
 	ip := pod.Status.PodIP
@@ -285,7 +284,6 @@ func (p *WarmPool) rollbackLabel(ctx context.Context, podName string) {
 		p.logger.Warn("rollback: failed to remove session-id label", "pod", podName, "error", err)
 	}
 }
-
 
 // TriggerReplenish sends a non-blocking signal to the reconciler to run
 // immediately. Multiple rapid calls coalesce into a single reconciliation.

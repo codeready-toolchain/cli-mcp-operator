@@ -6,27 +6,81 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
+  # Job id must stay build-test-coverage: it is a required status check on the repo.
   build-test-coverage:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version-file: go.mod
 
     - name: Build application
       run: make build
 
-    - name: Vet
-      run: make vet
-
     - name: Run tests
       run: make test
 
-    - name: Run tests with coverage
-      run: make test-coverage
+  build-image:
+    # Verify images build on PRs; push happens in the CD workflow on master.
+    name: Build Image (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cli-mcp-server
+            image: codeready-toolchain/cli-mcp-server
+            containerfile: Containerfile.server
+          - name: cli-mcp-sandbox
+            image: codeready-toolchain/cli-mcp-sandbox
+            containerfile: Containerfile.agent
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - name: Build image
+      uses: redhat-actions/buildah-build@v2
+      with:
+        image: ${{ matrix.image }}
+        tags: latest
+        containerfiles: |
+          ${{ matrix.containerfile }}
+        platforms: linux/amd64
+        build-args: |
+          GIT_COMMIT=${{ github.sha }}
+          BUILD_TIME=ci
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+
+    - name: Lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        # Match sibling MCP repos; bump deliberately when lint breaks.
+        version: latest
+        args: --config=./.golangci.yml --verbose
