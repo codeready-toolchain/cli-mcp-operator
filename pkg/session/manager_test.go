@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,8 +17,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const testNamespace = "tarsy"
@@ -38,6 +44,11 @@ func newTestManager(t *testing.T, objects ...corev1.Pod) *SessionManager {
 		_, err := client.CoreV1().Pods(testNamespace).Create(ctx, &objects[i], metav1.CreateOptions{})
 		require.NoError(t, err)
 	}
+	return newTestManagerWithClient(t, client)
+}
+
+func newTestManagerWithClient(t *testing.T, client kubernetes.Interface) *SessionManager {
+	t.Helper()
 	mgr, err := NewSessionManager(client, newTestConfig(), slog.Default())
 	require.NoError(t, err)
 	return mgr
@@ -240,6 +251,71 @@ func TestGetOrCreatePod(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid session ID")
 	})
+
+	t.Run("creates pod on demand when cache empty", func(t *testing.T) {
+		// given
+		sessionID := "inv-ondemand"
+		mgr := newTestManager(t)
+		ctx := context.Background()
+		done := make(chan error, 1)
+		go func() { done <- markPodReady(mgr, sessionID, "10.0.0.99") }()
+
+		// when
+		ip, err := mgr.GetOrCreatePod(ctx, sessionID)
+
+		// then
+		require.NoError(t, <-done)
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.99", ip)
+		cachedIP, _, ok := mgr.cache.Get(sessionID)
+		assert.True(t, ok)
+		assert.Equal(t, "10.0.0.99", cachedIP)
+		_, secretErr := mgr.clientset.CoreV1().Secrets(testNamespace).Get(ctx, secretNamePrefix+sessionID, metav1.GetOptions{})
+		require.NoError(t, secretErr)
+	})
+
+	t.Run("rediscovers when create returns AlreadyExists", func(t *testing.T) {
+		// given
+		sessionID := "inv-exists"
+		existing := readyPod(sessionID, "10.0.0.77", time.Now().Add(-2*time.Minute))
+		client := fake.NewSimpleClientset()
+		client.PrependReactor("create", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			require.NoError(t, client.Tracker().Add(existing.DeepCopy()))
+			return true, nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "pods"}, existing.Name)
+		})
+		mgr := newTestManagerWithClient(t, client)
+
+		// when
+		ip, err := mgr.GetOrCreatePod(context.Background(), sessionID)
+
+		// then
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.77", ip)
+		cachedIP, _, ok := mgr.cache.Get(sessionID)
+		assert.True(t, ok)
+		assert.Equal(t, "10.0.0.77", cachedIP)
+	})
+}
+
+// markPodReady updates a newly created sandbox pod to Running/Ready so waitForReady can succeed.
+func markPodReady(mgr *SessionManager, sessionID, ip string) error {
+	ctx := context.Background()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pod, err := mgr.clientset.CoreV1().Pods(testNamespace).Get(ctx, podNamePrefix+sessionID, metav1.GetOptions{})
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		pod.Status.Phase = corev1.PodRunning
+		pod.Status.PodIP = ip
+		pod.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+		}
+		_, err = mgr.clientset.CoreV1().Pods(testNamespace).UpdateStatus(ctx, pod, metav1.UpdateOptions{})
+		return err
+	}
+	return fmt.Errorf("pod %s not found before deadline", podNamePrefix+sessionID)
 }
 
 func TestBuildPodSpec(t *testing.T) {
@@ -498,5 +574,26 @@ func TestExecuteCommand(t *testing.T) {
 		// then
 		require.NoError(t, err)
 		assert.Equal(t, expectedToken, receivedToken)
+	})
+
+	t.Run("transport failure invalidates cache", func(t *testing.T) {
+		// given — cache points at localhost; AgentPort has nothing listening
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		closedPort := ln.Addr().(*net.TCPAddr).Port
+		require.NoError(t, ln.Close())
+
+		mgr := newTestManager(t)
+		mgr.config.AgentPort = closedPort
+		mgr.SetHTTPClient(&http.Client{Timeout: 200 * time.Millisecond})
+		mgr.cache.Set("inv-transport", "127.0.0.1", "pod-transport")
+
+		// when
+		_, execErr := mgr.ExecuteCommand(context.Background(), "inv-transport", "echo hi", 5)
+
+		// then
+		require.Error(t, execErr)
+		_, _, ok := mgr.cache.Get("inv-transport")
+		assert.False(t, ok, "cache entry should be invalidated on transport error")
 	})
 }
