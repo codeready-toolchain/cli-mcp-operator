@@ -1,5 +1,5 @@
 include ./make/*.mk
-.PHONY: build build-server build-agent run test clean fmt lint deps build-prod help image-agent
+.PHONY: build build-server build-agent run test clean fmt lint deps build-prod help image-agent image-server
 
 # Application name
 APP_NAME = cli-mcp-server
@@ -88,6 +88,12 @@ image-agent:
 		--build-arg BUILD_TIME=$(BUILD_TIME) \
 		-t cli-mcp-sandbox:latest .
 
+image-server:
+	podman build -f Containerfile.server \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT_ID) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t cli-mcp-server:latest .
+
 # Help
 help:
 	@echo "Available targets:"
@@ -105,4 +111,5 @@ help:
 	@echo "  build-prod-server- Build server for production"
 	@echo "  build-prod-agent - Build agent for production"
 	@echo "  image-agent      - Build sandbox agent container image"
+	@echo "  image-server     - Build MCP server container image"
 	@echo "  help             - Show this help"

@@ -1,0 +1,17 @@
+FROM mirror.gcr.io/library/golang:1.25-alpine AS go-builder
+RUN apk add --no-cache git make
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG GIT_COMMIT=dev
+ARG BUILD_TIME=unknown
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-X github.com/codeready-toolchain/cli-mcp-server/pkg/version.commitOverride=${GIT_COMMIT} -X github.com/codeready-toolchain/cli-mcp-server/pkg/version.BuildTime=${BUILD_TIME}" \
+    -o bin/cli-mcp-server ./cmd/server/
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=go-builder /workspace/bin/cli-mcp-server /usr/bin/
+USER 1001
+ENTRYPOINT ["/usr/bin/cli-mcp-server"]
+CMD ["--transport", "http", "--stateless"]
