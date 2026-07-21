@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -273,14 +272,24 @@ func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 							corev1.ResourceMemory: resource.MustParse(config.MemoryLimit),
 						},
 					},
+					// Exec probe hits /health on loopback so kubelet does not need NetworkPolicy
+					// ingress (HTTPGet from the node IP is blocked when only app=cli-mcp-server
+					// may reach :8090). /health reflects bash session liveness (IsAlive), not
+					// merely TCP accept. curl-minimal is part of the sandbox image contract.
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
-								Port: intstr.FromInt32(int32(config.AgentPort)), //nolint:gosec // G115: port in valid range
+							Exec: &corev1.ExecAction{
+								Command: []string{
+									"curl",
+									"-fsS",
+									"--max-time",
+									"1",
+									fmt.Sprintf("http://127.0.0.1:%d/health", config.AgentPort),
+								},
 							},
 						},
 						InitialDelaySeconds: 2,
+						TimeoutSeconds:      2, // > curl --max-time so shell/startup does not consume the whole budget
 						PeriodSeconds:       10,
 					},
 					SecurityContext: &corev1.SecurityContext{
