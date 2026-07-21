@@ -19,7 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -273,11 +272,20 @@ func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 							corev1.ResourceMemory: resource.MustParse(config.MemoryLimit),
 						},
 					},
+					// Exec probe (same pattern as other TARSy MCP servers behind NetworkPolicy).
+					// HTTPGet from kubelet uses the node IP and is blocked when ingress is
+					// restricted to app=cli-mcp-server only.
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
-								Port: intstr.FromInt32(int32(config.AgentPort)), //nolint:gosec // G115: port in valid range
+							Exec: &corev1.ExecAction{
+								Command: []string{
+									"/bin/bash",
+									"-c",
+									fmt.Sprintf(
+										`timeout 1 bash -c "</dev/tcp/127.0.0.1/%d" && echo "ok" || exit 1`,
+										config.AgentPort,
+									),
+								},
 							},
 						},
 						InitialDelaySeconds: 2,

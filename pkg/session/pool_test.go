@@ -87,10 +87,15 @@ func TestBuildWarmPodSpec(t *testing.T) {
 	assert.False(t, *container.SecurityContext.AllowPrivilegeEscalation)
 	assert.Contains(t, container.SecurityContext.Capabilities.Drop, corev1.Capability("ALL"))
 
-	// then — readiness probe
+	// then — readiness probe (exec to loopback; works with server-only NetworkPolicy)
 	require.NotNil(t, container.ReadinessProbe)
-	require.NotNil(t, container.ReadinessProbe.HTTPGet)
-	assert.Equal(t, "/health", container.ReadinessProbe.HTTPGet.Path)
+	require.NotNil(t, container.ReadinessProbe.Exec)
+	require.Equal(t, []string{
+		"/bin/bash",
+		"-c",
+		`timeout 1 bash -c "</dev/tcp/127.0.0.1/8090" && echo "ok" || exit 1`,
+	}, container.ReadinessProbe.Exec.Command)
+	assert.Nil(t, container.ReadinessProbe.HTTPGet)
 
 	// then — volumes and mounts match session manager
 	assert.Len(t, pod.Spec.Volumes, 2)
