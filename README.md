@@ -113,3 +113,7 @@ context.
 
 - [Implementation Plan](docs/implementation/implementation-plan.md) — Phased plan
 - [Jira Stories](docs/implementation/stories.md) — Epic SANDBOX-1803 breakdown
+
+## License
+
+The code is available under the [Apache License 2.0](LICENSE).
