@@ -75,11 +75,11 @@ func TestBuildWarmPodSpec(t *testing.T) {
 	assert.NotEmpty(t, pod.Annotations[annotationCreatedAt])
 	assert.NotEmpty(t, pod.Annotations[annotationLastActivity])
 
-	// then — pod security context
+	// then — pod security context (no hardcoded UID/GID; OpenShift assigns from namespace range)
 	require.NotNil(t, pod.Spec.SecurityContext)
 	assert.True(t, *pod.Spec.SecurityContext.RunAsNonRoot)
-	assert.Equal(t, int64(1001), *pod.Spec.SecurityContext.RunAsUser)
-	assert.Equal(t, int64(1001), *pod.Spec.SecurityContext.RunAsGroup)
+	assert.Nil(t, pod.Spec.SecurityContext.RunAsUser)
+	assert.Nil(t, pod.Spec.SecurityContext.RunAsGroup)
 
 	// then — container security
 	require.Len(t, pod.Spec.Containers, 1)

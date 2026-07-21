@@ -240,8 +240,6 @@ func isPodReady(pod *corev1.Pod) bool {
 func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 	now := time.Now().UTC().Format(time.RFC3339)
 	runAsNonRoot := true
-	var runAsUser int64 = 1001
-	var runAsGroup int64 = 1001
 	allowPrivEsc := false
 
 	return &corev1.Pod{
@@ -260,8 +258,6 @@ func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 			ServiceAccountName: config.ServiceAccountName,
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: &runAsNonRoot,
-				RunAsUser:    &runAsUser,
-				RunAsGroup:   &runAsGroup,
 			},
 			Containers: []corev1.Container{
 				{
