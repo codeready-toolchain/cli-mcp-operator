@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 go build \
     -ldflags="-X github.com/codeready-toolchain/cli-mcp-server/pkg/version.commitOverride=${GIT_COMMIT} -X github.com/codeready-toolchain/cli-mcp-server/pkg/version.BuildTime=${BUILD_TIME}" \
     -o bin/cli-mcp-server ./cmd/server/
 
-FROM gcr.io/distroless/static-debian12
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 COPY --from=go-builder /workspace/bin/cli-mcp-server /usr/bin/
 USER 1001
 ENTRYPOINT ["/usr/bin/cli-mcp-server"]
