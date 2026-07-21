@@ -272,23 +272,24 @@ func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 							corev1.ResourceMemory: resource.MustParse(config.MemoryLimit),
 						},
 					},
-					// Exec probe (same pattern as other TARSy MCP servers behind NetworkPolicy).
-					// HTTPGet from kubelet uses the node IP and is blocked when ingress is
-					// restricted to app=cli-mcp-server only.
+					// Exec probe hits /health on loopback so kubelet does not need NetworkPolicy
+					// ingress (HTTPGet from the node IP is blocked when only app=cli-mcp-server
+					// may reach :8090). /health reflects bash session liveness (IsAlive), not
+					// merely TCP accept. curl-minimal is part of the sandbox image contract.
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							Exec: &corev1.ExecAction{
 								Command: []string{
-									"/bin/bash",
-									"-c",
-									fmt.Sprintf(
-										`timeout 1 bash -c "</dev/tcp/127.0.0.1/%d" && echo "ok" || exit 1`,
-										config.AgentPort,
-									),
+									"curl",
+									"-fsS",
+									"--max-time",
+									"1",
+									fmt.Sprintf("http://127.0.0.1:%d/health", config.AgentPort),
 								},
 							},
 						},
 						InitialDelaySeconds: 2,
+						TimeoutSeconds:      2, // > curl --max-time so shell/startup does not consume the whole budget
 						PeriodSeconds:       10,
 					},
 					SecurityContext: &corev1.SecurityContext{
