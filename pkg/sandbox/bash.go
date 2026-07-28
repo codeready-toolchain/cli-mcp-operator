@@ -76,14 +76,20 @@ func (bs *BashSession) spawn() error {
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
+		_ = stdin.Close()
+		_ = stdoutPipe.Close()
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
 		return fmt.Errorf("start bash: %w", err)
 	}
 
@@ -199,9 +205,10 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*ExecResu
 		capturing := false
 		for {
 			line, err := stdoutReader.ReadString('\n')
-			if strings.Contains(line, startMarker) {
+			trimmed := strings.TrimSuffix(line, "\n")
+			if trimmed == startMarker {
 				capturing = true
-			} else if strings.Contains(line, endMarker) {
+			} else if trimmed == endMarker {
 				stdoutCh <- readResult{output: strings.TrimRight(buf.String(), "\n")}
 				return
 			} else if capturing {
@@ -218,10 +225,17 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*ExecResu
 		var buf strings.Builder
 		for {
 			line, err := stderrReader.ReadString('\n')
-			if strings.Contains(line, exitMarker) {
-				codeStr := line[strings.Index(line, exitMarker)+len(exitMarker):]
-				codeStr = strings.TrimSpace(codeStr)
-				code, _ := strconv.Atoi(codeStr)
+			trimmed := strings.TrimSuffix(line, "\n")
+			if after, ok := strings.CutPrefix(trimmed, exitMarker); ok {
+				code, parseErr := strconv.Atoi(strings.TrimSpace(after))
+				if parseErr != nil {
+					stderrCh <- readResult{
+						output:   strings.TrimRight(buf.String(), "\n"),
+						exitCode: -1,
+						err:      fmt.Errorf("parse exit code %q: %w", after, parseErr),
+					}
+					return
+				}
 				stderrCh <- readResult{output: strings.TrimRight(buf.String(), "\n"), exitCode: code}
 				return
 			}

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -272,6 +273,50 @@ func TestClaimPod(t *testing.T) {
 		// then — should claim the older pod
 		require.NoError(t, err)
 		assert.Equal(t, "warm-old", name)
+	})
+
+	t.Run("waits for empty PodIP then claims", func(t *testing.T) {
+		// given — Ready pod whose IP is not yet reflected on the patched object
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(ts.Close)
+
+		pod := unassignedPod("warm-no-ip", "", time.Now())
+		pool := newTestPool(t, pod)
+		pool.config.AgentPort = agentPortFromURL(t, ts.URL)
+		pool.SetHTTPClient(ts.Client())
+		ctx := context.Background()
+
+		done := make(chan error, 1)
+		go func() {
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				p, err := pool.clientset.CoreV1().Pods(testNamespace).Get(ctx, "warm-no-ip", metav1.GetOptions{})
+				if err != nil {
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
+				if _, claimed := p.Labels[labelSessionID]; !claimed {
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
+				p.Status.PodIP = "127.0.0.1"
+				_, err = pool.clientset.CoreV1().Pods(testNamespace).UpdateStatus(ctx, p, metav1.UpdateOptions{})
+				done <- err
+				return
+			}
+			done <- fmt.Errorf("pod was not claimed before deadline")
+		}()
+
+		// when
+		ip, name, err := pool.ClaimPod(ctx, "session-wait-ip")
+
+		// then
+		require.NoError(t, <-done)
+		require.NoError(t, err)
+		assert.Equal(t, "127.0.0.1", ip)
+		assert.Equal(t, "warm-no-ip", name)
 	})
 
 	t.Run("returns error when pool exhausted", func(t *testing.T) {
@@ -565,24 +610,26 @@ func TestGetOrCreatePodWithPool(t *testing.T) {
 		mgr, err := NewSessionManager(client, cfg, slog.Default())
 		require.NoError(t, err)
 
-		// when — GetOrCreatePod will fail pool claim and fall through to on-demand
-		// On-demand create will make a pod in the fake client.
-		// The fake client doesn't set PodIP or conditions, so waitForReady will timeout.
-		// We just verify it attempts on-demand (the pod is created in K8s).
+		// when — GetOrCreatePod will fail pool claim and fall through to on-demand.
+		// Fake client leaves pods non-Ready, so waitForReady fails and cleans up.
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 
 		_, getErr := mgr.GetOrCreatePod(ctx, "session-fallback")
 
-		// then — expect timeout error from waitForReady (on-demand path was taken)
+		// then — on-demand path was taken (create + wait), then wait failed
 		require.Error(t, getErr)
+		assert.Contains(t, getErr.Error(), "create sandbox pod")
+		assert.Contains(t, getErr.Error(), "wait for pod ready")
 
-		// then — verify on-demand pod was created (proves fallback happened)
+		// then — failed wait deletes the orphan pod and auth secret
 		pods, listErr := client.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("%s=%s", labelSessionID, "session-fallback"),
 		})
 		require.NoError(t, listErr)
-		assert.NotEmpty(t, pods.Items, "on-demand pod should have been created")
+		assert.Empty(t, pods.Items, "failed on-demand pod should be cleaned up")
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-fallback", metav1.GetOptions{})
+		assert.True(t, apierrors.IsNotFound(secretErr), "auth secret should be cleaned up after wait failure")
 	})
 
 	t.Run("pool disabled when WarmPoolSize is 0", func(t *testing.T) {

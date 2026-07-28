@@ -224,6 +224,35 @@ func TestGetOrCreatePod(t *testing.T) {
 		assert.Equal(t, podNamePrefix+"inv-2", cachedName)
 	})
 
+	t.Run("waits for pending discovered pod to become ready", func(t *testing.T) {
+		// given — labeled pod exists but is not Ready yet
+		sessionID := "inv-pending"
+		pod := readyPod(sessionID, "", time.Now())
+		pod.Status.Phase = corev1.PodPending
+		pod.Status.PodIP = ""
+		pod.Status.Conditions = nil
+		mgr := newTestManager(t, pod)
+		ctx := context.Background()
+
+		done := make(chan error, 1)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			done <- markPodReady(mgr, sessionID, "10.0.0.42")
+		}()
+
+		// when
+		ip, err := mgr.GetOrCreatePod(ctx, sessionID)
+
+		// then
+		require.NoError(t, <-done)
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.42", ip)
+		cachedIP, cachedName, ok := mgr.cache.Get(sessionID)
+		assert.True(t, ok)
+		assert.Equal(t, "10.0.0.42", cachedIP)
+		assert.Equal(t, podNamePrefix+sessionID, cachedName)
+	})
+
 	t.Run("selects oldest ready pod", func(t *testing.T) {
 		// given
 		older := readyPod("inv-3", "10.0.0.10", time.Now().Add(-10*time.Minute))

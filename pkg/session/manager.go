@@ -432,9 +432,22 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 
 	ip, waitErr := m.waitForReady(ctx, created.Name)
 	if waitErr != nil {
+		// Pod never became Ready (timeout, cancel, terminal failure). Delete it and
+		// its auth Secret now so they are not left until IdleTimeout cleanup; a
+		// later retry can create a fresh pod instead of rediscovering a stuck one.
+		bestEffortDeletePod(ctx, m.clientset, m.config.Namespace, created.Name, m.logger)
+		bestEffortDeleteSecret(ctx, m.clientset, m.config.Namespace, sessionID, m.logger)
 		return "", "", fmt.Errorf("wait for pod ready: %w", waitErr)
 	}
 	return ip, created.Name, nil
+}
+
+// bestEffortDeletePod deletes a sandbox pod, logging a warning on failure.
+func bestEffortDeletePod(ctx context.Context, clientset kubernetes.Interface, namespace, podName string, logger *slog.Logger) {
+	err := clientset.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		logger.Warn("failed to delete sandbox pod", "pod", podName, "error", err)
+	}
 }
 
 // bestEffortDeleteSecret deletes the per-session auth Secret, logging a

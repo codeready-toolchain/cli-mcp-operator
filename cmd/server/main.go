@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -141,7 +140,7 @@ func runServer(cfg runConfig) error {
 	case "http":
 		return serveHTTP(ctx, cancel, cfg.address, mcpServer, mgr, clientset, cfg.namespace, logger)
 	case "stdio":
-		return serveStdio(ctx, mcpServer)
+		return serveStdio(ctx, mcpServer, logger)
 	default:
 		return fmt.Errorf("unsupported transport: %s", cfg.transport)
 	}
@@ -158,7 +157,7 @@ func serveHTTP(ctx context.Context, cancel context.CancelFunc, address string, m
 	}
 	serverErrChan := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s (HTTP, stateless)", address)
+		logger.Info("listening", "address", address, "transport", "http", "stateless", true)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErrChan <- err
 		}
@@ -166,7 +165,7 @@ func serveHTTP(ctx context.Context, cancel context.CancelFunc, address string, m
 
 	select {
 	case <-ctx.Done():
-		log.Println("received shutdown signal, draining...")
+		logger.Info("received shutdown signal, draining")
 	case err := <-serverErrChan:
 		cancel()
 		return fmt.Errorf("HTTP serve failed: %w", err)
@@ -176,18 +175,18 @@ func serveHTTP(ctx context.Context, cancel context.CancelFunc, address string, m
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown error: %v", err)
+		logger.Error("shutdown error", "error", err)
 	}
-	log.Println("shutdown complete")
+	logger.Info("shutdown complete")
 	return nil
 }
 
-func serveStdio(ctx context.Context, mcpServer *mcp.Server) error {
-	log.Println("serving on stdio")
+func serveStdio(ctx context.Context, mcpServer *mcp.Server, logger *slog.Logger) error {
+	logger.Info("serving on stdio")
 	if err := mcpServer.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("stdio transport error: %w", err)
 	}
-	log.Println("shutdown complete")
+	logger.Info("shutdown complete")
 	return nil
 }
 
@@ -209,20 +208,6 @@ func startCleanupLoop(ctx context.Context, mgr *session.SessionManager, logger *
 			}
 		}
 	}()
-}
-
-func loadHMACKey(path string) (string, error) {
-	if path == "" {
-		return "", fmt.Errorf("--hmac-key-file is required")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read HMAC key file: %w", err)
-	}
-	if len(data) == 0 {
-		return "", fmt.Errorf("HMAC key file is empty (zero bytes): %s", path)
-	}
-	return string(data), nil
 }
 
 func buildClientset(kubeconfigPath string) (kubernetes.Interface, error) {
