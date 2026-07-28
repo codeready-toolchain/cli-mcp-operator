@@ -138,7 +138,7 @@ func runServer(cfg runConfig) error {
 
 	switch cfg.transport {
 	case "http":
-		return serveHTTP(ctx, cancel, cfg.address, mcpServer, mgr, clientset, cfg.namespace, logger)
+		return serveHTTP(ctx, cancel, cfg.address, cfg.stateless, mcpServer, mgr, clientset, cfg.namespace, logger)
 	case "stdio":
 		return serveStdio(ctx, mcpServer, logger)
 	default:
@@ -146,7 +146,7 @@ func runServer(cfg runConfig) error {
 	}
 }
 
-func serveHTTP(ctx context.Context, cancel context.CancelFunc, address string, mcpServer *mcp.Server, mgr *session.SessionManager, clientset kubernetes.Interface, namespace string, logger *slog.Logger) error {
+func serveHTTP(ctx context.Context, cancel context.CancelFunc, address string, stateless bool, mcpServer *mcp.Server, mgr *session.SessionManager, clientset kubernetes.Interface, namespace string, logger *slog.Logger) error {
 	checker := &k8sHealthChecker{clientset: clientset, namespace: namespace}
 	mux := server.NewMux(mcpServer, mgr, checker, logger)
 
@@ -157,7 +157,7 @@ func serveHTTP(ctx context.Context, cancel context.CancelFunc, address string, m
 	}
 	serverErrChan := make(chan error, 1)
 	go func() {
-		logger.Info("listening", "address", address, "transport", "http", "stateless", true)
+		logger.Info("listening", "address", address, "transport", "http", "stateless", stateless)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErrChan <- err
 		}

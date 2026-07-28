@@ -253,6 +253,7 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*ExecResu
 	defer timer.Stop()
 
 	var stdoutStr, stderrStr string
+	var stderrErr error
 	exitCode := 0
 	completed := 0
 
@@ -266,6 +267,10 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*ExecResu
 			completed++
 		case res := <-stderrCh:
 			stderrStr = res.output
+			if res.err != nil {
+				stderrErr = res.err
+				bs.dead = true
+			}
 			if res.exitCode >= 0 {
 				exitCode = res.exitCode
 			} else {
@@ -316,6 +321,9 @@ func (bs *BashSession) Execute(command string, timeout time.Duration) (*ExecResu
 	duration := time.Since(start)
 
 	if bs.dead {
+		if stderrErr != nil {
+			return nil, stderrErr
+		}
 		return nil, fmt.Errorf("bash process exited unexpectedly")
 	}
 

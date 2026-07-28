@@ -435,8 +435,11 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 		// Pod never became Ready (timeout, cancel, terminal failure). Delete it and
 		// its auth Secret now so they are not left until IdleTimeout cleanup; a
 		// later retry can create a fresh pod instead of rediscovering a stuck one.
-		bestEffortDeletePod(ctx, m.clientset, m.config.Namespace, created.Name, m.logger)
-		bestEffortDeleteSecret(ctx, m.clientset, m.config.Namespace, sessionID, m.logger)
+		// Use a fresh timeout: the request ctx may already be canceled/expired.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		bestEffortDeletePod(cleanupCtx, m.clientset, m.config.Namespace, created.Name, m.logger)
+		bestEffortDeleteSecret(cleanupCtx, m.clientset, m.config.Namespace, sessionID, m.logger)
 		return "", "", fmt.Errorf("wait for pod ready: %w", waitErr)
 	}
 	return ip, created.Name, nil
