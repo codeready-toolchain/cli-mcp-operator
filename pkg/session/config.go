@@ -22,7 +22,7 @@ type SandboxConfig struct {
 // DefaultConfig returns a SandboxConfig with production-ready defaults.
 // Callers must set Image and HMACKey before use; these have no safe defaults.
 func DefaultConfig() SandboxConfig {
-	return SandboxConfig{
+	return SandboxConfig{ // #nosec G101 -- K8s Secret resource name, not a credential
 		CPURequest:         "100m",
 		CPULimit:           "500m",
 		MemoryRequest:      "128Mi",
