@@ -17,7 +17,7 @@ Designed to run against a Kubernetes (or OpenShift) cluster — the server manag
 
 ## Usage
 
-Works with any MCP client that can call tools over HTTP (or stdio) and send an `X-Session-ID` header.
+Works with any MCP client that can call tools over HTTP (or stdio) and send an `X-Session-ID` header. Over HTTP this is straightforward; over stdio it depends on whether the client/SDK can attach request headers.
 
 ### MCP tool: `bash`
 
