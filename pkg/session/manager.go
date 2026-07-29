@@ -143,6 +143,9 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 			// Claim only guarantees IP + /assign; wait for PodReady before caching.
 			readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
 			if readyErr != nil {
+				// Agent already received the token, so the pod cannot return to the
+				// warm pool — delete it and the Secret (same as on-demand wait failure).
+				m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
 				return "", fmt.Errorf("warm pool pod not ready after claim: %w", readyErr)
 			}
 			if readyIP == "" {
@@ -435,14 +438,19 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 		// Pod never became Ready (timeout, cancel, terminal failure). Delete it and
 		// its auth Secret now so they are not left until IdleTimeout cleanup; a
 		// later retry can create a fresh pod instead of rediscovering a stuck one.
-		// Use a fresh timeout: the request ctx may already be canceled/expired.
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-		bestEffortDeletePod(cleanupCtx, m.clientset, m.config.Namespace, created.Name, m.logger)
-		bestEffortDeleteSecret(cleanupCtx, m.clientset, m.config.Namespace, sessionID, m.logger)
+		m.bestEffortCleanupFailedPod(created.Name, sessionID)
 		return "", "", fmt.Errorf("wait for pod ready: %w", waitErr)
 	}
 	return ip, created.Name, nil
+}
+
+// bestEffortCleanupFailedPod deletes a pod and its auth Secret using a short-lived
+// context independent of the request (which may already be canceled or timed out).
+func (m *SessionManager) bestEffortCleanupFailedPod(podName, sessionID string) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cleanupCancel()
+	bestEffortDeletePod(cleanupCtx, m.clientset, m.config.Namespace, podName, m.logger)
+	bestEffortDeleteSecret(cleanupCtx, m.clientset, m.config.Namespace, sessionID, m.logger)
 }
 
 // bestEffortDeletePod deletes a sandbox pod, logging a warning on failure.

@@ -632,6 +632,47 @@ func TestGetOrCreatePodWithPool(t *testing.T) {
 		assert.True(t, apierrors.IsNotFound(secretErr), "auth secret should be cleaned up after wait failure")
 	})
 
+	t.Run("cleans up claimed warm pod when waitForReady fails", func(t *testing.T) {
+		// given — claimable pod (has IP for /assign) but not Ready, so post-claim wait fails
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(ts.Close)
+
+		warmPod := unassignedPod("warm-not-ready", "127.0.0.1", time.Now())
+		warmPod.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+		}
+
+		client := fake.NewSimpleClientset()
+		ctx := context.Background()
+		_, err := client.CoreV1().Pods(testNamespace).Create(ctx, &warmPod, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		cfg := newTestConfig()
+		cfg.WarmPoolSize = 3
+		cfg.AgentPort = agentPortFromURL(t, ts.URL)
+
+		mgr, err := NewSessionManager(client, cfg, slog.Default())
+		require.NoError(t, err)
+		mgr.Pool().SetHTTPClient(ts.Client())
+
+		waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+
+		// when
+		_, getErr := mgr.GetOrCreatePod(waitCtx, "session-claim-not-ready")
+
+		// then — claim succeeded but ready-wait failed; pod and secret are deleted
+		require.Error(t, getErr)
+		assert.Contains(t, getErr.Error(), "warm pool pod not ready after claim")
+
+		_, podErr := client.CoreV1().Pods(testNamespace).Get(context.Background(), "warm-not-ready", metav1.GetOptions{})
+		assert.True(t, apierrors.IsNotFound(podErr), "claimed pod should be deleted after ready-wait failure")
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-claim-not-ready", metav1.GetOptions{})
+		assert.True(t, apierrors.IsNotFound(secretErr), "auth secret should be deleted after ready-wait failure")
+	})
+
 	t.Run("pool disabled when WarmPoolSize is 0", func(t *testing.T) {
 		// given
 		client := fake.NewSimpleClientset()
