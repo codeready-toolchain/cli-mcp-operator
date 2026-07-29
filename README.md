@@ -43,7 +43,7 @@ Every request must include:
 X-Session-ID: <session-id>
 ```
 
-The server only uses this value to find or create a sandbox pod. It does not care how the client chooses IDs.
+The server only uses this value to find or create a sandbox pod. Session IDs must be RFC 1123 DNS labels (`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`); invalid IDs fail at pod create.
 
 Typical client practice (agent harness / orchestrator — not the LLM):
 
