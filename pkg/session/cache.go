@@ -34,13 +34,17 @@ func NewPodCache(ttl time.Duration) *PodCache {
 }
 
 // Get returns the cached pod IP and name for the session. Returns empty
-// strings and false on miss or TTL expiry.
+// strings and false on miss or TTL expiry. Expired entries are deleted.
 func (c *PodCache) Get(sessionID string) (podIP, podName string, ok bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	e, exists := c.entries[sessionID]
-	if !exists || time.Now().After(e.expiresAt) {
+	if !exists {
+		return "", "", false
+	}
+	if time.Now().After(e.expiresAt) {
+		delete(c.entries, sessionID)
 		return "", "", false
 	}
 	return e.podIP, e.podName, true
@@ -92,7 +96,8 @@ func (c *PodCache) EvictExpired() int {
 	return evicted
 }
 
-// Len returns the number of entries (including expired but not yet evicted).
+// Len returns the number of entries currently in the cache.
+// Expired entries may still be counted until Get or EvictExpired removes them.
 func (c *PodCache) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

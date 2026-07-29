@@ -10,6 +10,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
+	"github.com/codeready-toolchain/cli-mcp-server/pkg/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -177,10 +179,17 @@ func TestHealth(t *testing.T) {
 	})
 }
 
+type stubExecutor struct{}
+
+func (stubExecutor) ExecuteCommand(_ context.Context, _, _ string, _ int) (*agent.ExecResponse, error) {
+	return &agent.ExecResponse{ExitCode: 0}, nil
+}
+
 func TestBashToolRegistered(t *testing.T) {
-	// given
+	// given — mirrors cmd/server wiring: NewMCPServer then RegisterWith
 	logger := newTestLogger()
 	mcpSrv := NewMCPServer("test", true, logger)
+	tools.NewBashTool(stubExecutor{}).RegisterWith(mcpSrv)
 
 	ct, st := mcp.NewInMemoryTransports()
 	ss, err := mcpSrv.Connect(context.Background(), st, nil)
@@ -192,12 +201,13 @@ func TestBashToolRegistered(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cs.Close() })
 
-	// when — server has no tools registered yet (bash tool registration happens in cmd/server)
+	// when
 	result, err := cs.ListTools(context.Background(), nil)
 
 	// then
 	require.NoError(t, err)
-	assert.Empty(t, result.Tools)
+	require.Len(t, result.Tools, 1)
+	assert.Equal(t, "bash", result.Tools[0].Name)
 }
 
 func TestIsLoopback(t *testing.T) {

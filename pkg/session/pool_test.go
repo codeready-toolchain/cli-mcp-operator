@@ -274,6 +274,50 @@ func TestClaimPod(t *testing.T) {
 		assert.Equal(t, "warm-old", name)
 	})
 
+	t.Run("waits for empty PodIP then claims", func(t *testing.T) {
+		// given — Ready pod whose IP is not yet reflected on the patched object
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(ts.Close)
+
+		pod := unassignedPod("warm-no-ip", "", time.Now())
+		pool := newTestPool(t, pod)
+		pool.config.AgentPort = agentPortFromURL(t, ts.URL)
+		pool.SetHTTPClient(ts.Client())
+		ctx := context.Background()
+
+		done := make(chan error, 1)
+		go func() {
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				p, err := pool.clientset.CoreV1().Pods(testNamespace).Get(ctx, "warm-no-ip", metav1.GetOptions{})
+				if err != nil {
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
+				if _, claimed := p.Labels[labelSessionID]; !claimed {
+					time.Sleep(20 * time.Millisecond)
+					continue
+				}
+				p.Status.PodIP = "127.0.0.1"
+				_, err = pool.clientset.CoreV1().Pods(testNamespace).UpdateStatus(ctx, p, metav1.UpdateOptions{})
+				done <- err
+				return
+			}
+			done <- fmt.Errorf("pod was not claimed before deadline")
+		}()
+
+		// when
+		ip, name, err := pool.ClaimPod(ctx, "session-wait-ip")
+
+		// then
+		require.NoError(t, <-done)
+		require.NoError(t, err)
+		assert.Equal(t, "127.0.0.1", ip)
+		assert.Equal(t, "warm-no-ip", name)
+	})
+
 	t.Run("returns error when pool exhausted", func(t *testing.T) {
 		// given — empty pool
 		pool := newTestPool(t)
@@ -565,24 +609,69 @@ func TestGetOrCreatePodWithPool(t *testing.T) {
 		mgr, err := NewSessionManager(client, cfg, slog.Default())
 		require.NoError(t, err)
 
-		// when — GetOrCreatePod will fail pool claim and fall through to on-demand
-		// On-demand create will make a pod in the fake client.
-		// The fake client doesn't set PodIP or conditions, so waitForReady will timeout.
-		// We just verify it attempts on-demand (the pod is created in K8s).
+		// when — pool claim fails; on-demand create then wait fails via request deadline
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 
 		_, getErr := mgr.GetOrCreatePod(ctx, "session-fallback")
 
-		// then — expect timeout error from waitForReady (on-demand path was taken)
+		// then — on-demand path was taken (create + wait), then caller deadline fired
 		require.Error(t, getErr)
+		assert.Contains(t, getErr.Error(), "create sandbox pod")
+		assert.Contains(t, getErr.Error(), "wait for pod ready")
+		require.ErrorIs(t, getErr, context.DeadlineExceeded)
 
-		// then — verify on-demand pod was created (proves fallback happened)
+		// then — caller abort does not delete; sibling replicas may still be waiting
 		pods, listErr := client.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("%s=%s", labelSessionID, "session-fallback"),
 		})
 		require.NoError(t, listErr)
-		assert.NotEmpty(t, pods.Items, "on-demand pod should have been created")
+		assert.NotEmpty(t, pods.Items, "pod should remain after request deadline for sibling waiters")
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-fallback", metav1.GetOptions{})
+		require.NoError(t, secretErr, "auth secret should remain after request deadline")
+	})
+
+	t.Run("leaves claimed warm pod when waitForReady hits request deadline", func(t *testing.T) {
+		// given — claimable pod (has IP for /assign) but not Ready
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(ts.Close)
+
+		warmPod := unassignedPod("warm-not-ready", "127.0.0.1", time.Now())
+		warmPod.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+		}
+
+		client := fake.NewSimpleClientset()
+		ctx := context.Background()
+		_, err := client.CoreV1().Pods(testNamespace).Create(ctx, &warmPod, metav1.CreateOptions{})
+		require.NoError(t, err)
+
+		cfg := newTestConfig()
+		cfg.WarmPoolSize = 3
+		cfg.AgentPort = agentPortFromURL(t, ts.URL)
+
+		mgr, err := NewSessionManager(client, cfg, slog.Default())
+		require.NoError(t, err)
+		mgr.Pool().SetHTTPClient(ts.Client())
+
+		waitCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+
+		// when
+		_, getErr := mgr.GetOrCreatePod(waitCtx, "session-claim-not-ready")
+
+		// then — claim succeeded but request deadline aborted wait; leave pod+secret
+		require.Error(t, getErr)
+		assert.Contains(t, getErr.Error(), "warm pool pod not ready after claim")
+		require.ErrorIs(t, getErr, context.DeadlineExceeded)
+
+		claimed, podErr := client.CoreV1().Pods(testNamespace).Get(context.Background(), "warm-not-ready", metav1.GetOptions{})
+		require.NoError(t, podErr, "claimed pod should remain after request deadline")
+		assert.Equal(t, "session-claim-not-ready", claimed.Labels[labelSessionID])
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-claim-not-ready", metav1.GetOptions{})
+		require.NoError(t, secretErr, "auth secret should remain after request deadline")
 	})
 
 	t.Run("pool disabled when WarmPoolSize is 0", func(t *testing.T) {

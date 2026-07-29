@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
+	"github.com/codeready-toolchain/cli-mcp-server/pkg/sandbox"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -28,9 +29,9 @@ type CommandExecutor interface {
 	ExecuteCommand(ctx context.Context, sessionID, command string, timeoutSec int) (*agent.ExecResponse, error)
 }
 
-const (
-	defaultTimeout = 60
-	maxTimeout     = 300
+var (
+	defaultTimeout = int(sandbox.DefaultTimeout.Seconds())
+	maxTimeout     = int(sandbox.MaxTimeout.Seconds())
 )
 
 // BashTool implements the bash MCP tool handler.

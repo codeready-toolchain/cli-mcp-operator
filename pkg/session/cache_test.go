@@ -37,7 +37,7 @@ func TestPodCache_GetMiss(t *testing.T) {
 		assert.Empty(t, name)
 	})
 
-	t.Run("expired entry returns miss", func(t *testing.T) {
+	t.Run("expired entry returns miss and deletes entry", func(t *testing.T) {
 		// given
 		cache := NewPodCache(1 * time.Millisecond)
 		cache.Set("inv-1", "10.0.0.1", "pod-abc")
@@ -50,6 +50,7 @@ func TestPodCache_GetMiss(t *testing.T) {
 		assert.False(t, ok)
 		assert.Empty(t, ip)
 		assert.Empty(t, name)
+		assert.Equal(t, 0, cache.Len(), "expired entry should be removed on Get")
 	})
 }
 

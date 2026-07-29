@@ -256,6 +256,23 @@ func (p *WarmPool) waitForIP(ctx context.Context, podName string) (string, error
 	ticker := time.NewTicker(readyPollPeriod)
 	defer ticker.Stop()
 
+	check := func() (string, bool, error) {
+		pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return "", false, fmt.Errorf("get pod %q: %w", podName, err)
+		}
+		if pod.Status.PodIP != "" {
+			return pod.Status.PodIP, true, nil
+		}
+		return "", false, nil
+	}
+
+	if ip, ok, err := check(); err != nil {
+		return "", err
+	} else if ok {
+		return ip, nil
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -263,12 +280,12 @@ func (p *WarmPool) waitForIP(ctx context.Context, podName string) (string, error
 		case <-deadline:
 			return "", fmt.Errorf("pod %q did not get IP within %s", podName, readyTimeout)
 		case <-ticker.C:
-			pod, err := p.clientset.CoreV1().Pods(p.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+			ip, ok, err := check()
 			if err != nil {
-				return "", fmt.Errorf("get pod %q: %w", podName, err)
+				return "", err
 			}
-			if pod.Status.PodIP != "" {
-				return pod.Status.PodIP, nil
+			if ok {
+				return ip, nil
 			}
 		}
 	}

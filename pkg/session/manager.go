@@ -143,6 +143,12 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 			// Claim only guarantees IP + /assign; wait for PodReady before caching.
 			readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
 			if readyErr != nil {
+				// On caller abort, leave the pod for sibling replicas still in
+				// discover/waitForReady. On ready-timeout failure the agent already
+				// has the token, so delete — it cannot return to the warm pool.
+				if shouldCleanupAfterWaitFailure(readyErr) {
+					m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
+				}
 				return "", fmt.Errorf("warm pool pod not ready after claim: %w", readyErr)
 			}
 			if readyIP == "" {
@@ -432,9 +438,39 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 
 	ip, waitErr := m.waitForReady(ctx, created.Name)
 	if waitErr != nil {
+		// Delete only when the pod failed our ready wait. If the request context
+		// was canceled or timed out, another replica may still be waiting on the
+		// same pod via discoverPod — leave resources for idle GC instead.
+		if shouldCleanupAfterWaitFailure(waitErr) {
+			m.bestEffortCleanupFailedPod(created.Name, sessionID)
+		}
 		return "", "", fmt.Errorf("wait for pod ready: %w", waitErr)
 	}
 	return ip, created.Name, nil
+}
+
+// shouldCleanupAfterWaitFailure reports whether a waitForReady error means the
+// pod itself failed to become Ready (cleanup), versus the caller giving up
+// (Canceled/DeadlineExceeded — do not delete; sibling replicas may still wait).
+func shouldCleanupAfterWaitFailure(err error) bool {
+	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+// bestEffortCleanupFailedPod deletes a pod and its auth Secret using a short-lived
+// context independent of the request (which may already be canceled or timed out).
+func (m *SessionManager) bestEffortCleanupFailedPod(podName, sessionID string) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cleanupCancel()
+	bestEffortDeletePod(cleanupCtx, m.clientset, m.config.Namespace, podName, m.logger)
+	bestEffortDeleteSecret(cleanupCtx, m.clientset, m.config.Namespace, sessionID, m.logger)
+}
+
+// bestEffortDeletePod deletes a sandbox pod, logging a warning on failure.
+func bestEffortDeletePod(ctx context.Context, clientset kubernetes.Interface, namespace, podName string, logger *slog.Logger) {
+	err := clientset.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{})
+	if err != nil && !k8serrors.IsNotFound(err) {
+		logger.Warn("failed to delete sandbox pod", "pod", podName, "error", err)
+	}
 }
 
 // bestEffortDeleteSecret deletes the per-session auth Secret, logging a
