@@ -143,9 +143,12 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 			// Claim only guarantees IP + /assign; wait for PodReady before caching.
 			readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
 			if readyErr != nil {
-				// Agent already received the token, so the pod cannot return to the
-				// warm pool — delete it and the Secret (same as on-demand wait failure).
-				m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
+				// On caller abort, leave the pod for sibling replicas still in
+				// discover/waitForReady. On ready-timeout failure the agent already
+				// has the token, so delete — it cannot return to the warm pool.
+				if shouldCleanupAfterWaitFailure(readyErr) {
+					m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
+				}
 				return "", fmt.Errorf("warm pool pod not ready after claim: %w", readyErr)
 			}
 			if readyIP == "" {
@@ -435,13 +438,22 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 
 	ip, waitErr := m.waitForReady(ctx, created.Name)
 	if waitErr != nil {
-		// Pod never became Ready (timeout, cancel, terminal failure). Delete it and
-		// its auth Secret now so they are not left until IdleTimeout cleanup; a
-		// later retry can create a fresh pod instead of rediscovering a stuck one.
-		m.bestEffortCleanupFailedPod(created.Name, sessionID)
+		// Delete only when the pod failed our ready wait. If the request context
+		// was canceled or timed out, another replica may still be waiting on the
+		// same pod via discoverPod — leave resources for idle GC instead.
+		if shouldCleanupAfterWaitFailure(waitErr) {
+			m.bestEffortCleanupFailedPod(created.Name, sessionID)
+		}
 		return "", "", fmt.Errorf("wait for pod ready: %w", waitErr)
 	}
 	return ip, created.Name, nil
+}
+
+// shouldCleanupAfterWaitFailure reports whether a waitForReady error means the
+// pod itself failed to become Ready (cleanup), versus the caller giving up
+// (Canceled/DeadlineExceeded — do not delete; sibling replicas may still wait).
+func shouldCleanupAfterWaitFailure(err error) bool {
+	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 // bestEffortCleanupFailedPod deletes a pod and its auth Secret using a short-lived

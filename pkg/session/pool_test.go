@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -610,30 +609,30 @@ func TestGetOrCreatePodWithPool(t *testing.T) {
 		mgr, err := NewSessionManager(client, cfg, slog.Default())
 		require.NoError(t, err)
 
-		// when — GetOrCreatePod will fail pool claim and fall through to on-demand.
-		// Fake client leaves pods non-Ready, so waitForReady fails and cleans up.
+		// when — pool claim fails; on-demand create then wait fails via request deadline
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
 
 		_, getErr := mgr.GetOrCreatePod(ctx, "session-fallback")
 
-		// then — on-demand path was taken (create + wait), then wait failed
+		// then — on-demand path was taken (create + wait), then caller deadline fired
 		require.Error(t, getErr)
 		assert.Contains(t, getErr.Error(), "create sandbox pod")
 		assert.Contains(t, getErr.Error(), "wait for pod ready")
+		require.ErrorIs(t, getErr, context.DeadlineExceeded)
 
-		// then — failed wait deletes the orphan pod and auth secret
+		// then — caller abort does not delete; sibling replicas may still be waiting
 		pods, listErr := client.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("%s=%s", labelSessionID, "session-fallback"),
 		})
 		require.NoError(t, listErr)
-		assert.Empty(t, pods.Items, "failed on-demand pod should be cleaned up")
+		assert.NotEmpty(t, pods.Items, "pod should remain after request deadline for sibling waiters")
 		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-fallback", metav1.GetOptions{})
-		assert.True(t, apierrors.IsNotFound(secretErr), "auth secret should be cleaned up after wait failure")
+		require.NoError(t, secretErr, "auth secret should remain after request deadline")
 	})
 
-	t.Run("cleans up claimed warm pod when waitForReady fails", func(t *testing.T) {
-		// given — claimable pod (has IP for /assign) but not Ready, so post-claim wait fails
+	t.Run("leaves claimed warm pod when waitForReady hits request deadline", func(t *testing.T) {
+		// given — claimable pod (has IP for /assign) but not Ready
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -663,14 +662,16 @@ func TestGetOrCreatePodWithPool(t *testing.T) {
 		// when
 		_, getErr := mgr.GetOrCreatePod(waitCtx, "session-claim-not-ready")
 
-		// then — claim succeeded but ready-wait failed; pod and secret are deleted
+		// then — claim succeeded but request deadline aborted wait; leave pod+secret
 		require.Error(t, getErr)
 		assert.Contains(t, getErr.Error(), "warm pool pod not ready after claim")
+		require.ErrorIs(t, getErr, context.DeadlineExceeded)
 
-		_, podErr := client.CoreV1().Pods(testNamespace).Get(context.Background(), "warm-not-ready", metav1.GetOptions{})
-		assert.True(t, apierrors.IsNotFound(podErr), "claimed pod should be deleted after ready-wait failure")
+		claimed, podErr := client.CoreV1().Pods(testNamespace).Get(context.Background(), "warm-not-ready", metav1.GetOptions{})
+		require.NoError(t, podErr, "claimed pod should remain after request deadline")
+		assert.Equal(t, "session-claim-not-ready", claimed.Labels[labelSessionID])
 		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-claim-not-ready", metav1.GetOptions{})
-		assert.True(t, apierrors.IsNotFound(secretErr), "auth secret should be deleted after ready-wait failure")
+		require.NoError(t, secretErr, "auth secret should remain after request deadline")
 	})
 
 	t.Run("pool disabled when WarmPoolSize is 0", func(t *testing.T) {

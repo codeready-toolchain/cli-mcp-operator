@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -421,6 +422,28 @@ func TestBuildAuthSecret(t *testing.T) {
 	assert.Equal(t, "inv-sec", secret.Labels[labelSessionID])
 	assert.Equal(t, componentValue, secret.Labels[labelComponent])
 	assert.Equal(t, token, secret.StringData["token"])
+}
+
+func TestShouldCleanupAfterWaitFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"canceled", context.Canceled, false},
+		{"deadline exceeded", context.DeadlineExceeded, false},
+		{"wrapped canceled", fmt.Errorf("wait: %w", context.Canceled), false},
+		{"wrapped deadline", fmt.Errorf("wait: %w", context.DeadlineExceeded), false},
+		{"ready timeout", fmt.Errorf("pod %q not ready within %s", "p", readyTimeout), true},
+		{"other error", errors.New("get pod failed"), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, shouldCleanupAfterWaitFailure(tt.err))
+		})
+	}
 }
 
 func TestIsPodReady(t *testing.T) {
