@@ -49,7 +49,7 @@ Typical client practice (agent harness / orchestrator — not the LLM):
 
 1. Generate a new session ID when starting work that should share one sandbox
 2. Send that same ID on every follow-up `bash` call to reuse the persistent shell and `/workspace`
-3. Call `DELETE /sessions/{id}` when finished — removes the sandbox pod, auth secret, and cache entry
+3. Call `DELETE /sessions/{id}` when finished (HTTP transport only) — removes the sandbox pod, auth secret, and cache entry
 
 If the client never deletes the session, the sandbox is garbage-collected after `--idle-timeout` (default 30m).
 
