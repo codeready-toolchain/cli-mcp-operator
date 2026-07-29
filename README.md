@@ -109,7 +109,7 @@ Optional `--warm-pool-size` keeps ready pods on hand so new sessions skip cold s
 
 Each session gets its own pod. That pod is the security boundary:
 
-- **Isolation** — non-root (UID 1001), no privilege escalation, all capabilities dropped, resource limits
+- **Isolation** — non-root (runAsNonRoot), no privilege escalation, all capabilities dropped, resource limits
 - **Credentials** — read-only kubeconfig mounted from a dedicated investigation ServiceAccount (typically view/read-only RBAC)
 - **Network** — NetworkPolicy can restrict ingress to the MCP server and egress to intended APIs
 - **Agent auth** — per-session HMAC bearer token; unauthenticated `/exec` calls are rejected
