@@ -143,14 +143,14 @@ cli-mcp-server/
 ├── pkg/sandbox/    # Bash session + agent HTTP handlers
 ├── pkg/tools/      # MCP tool handlers
 ├── pkg/server/     # MCP server + HTTP mux
-└── docs/           # Design and implementation docs
+└── docs/           # Design docs
 ```
 
 ### Further reading
 
-- [Sketch](docs/proposals/cli-mcp-server-sketch.md) — problem statement and approach
-- [Design Overview](docs/proposals/cli-mcp-server-design-overview.md) — architecture overview
-- [Detailed Design](docs/proposals/cli-mcp-server-design.md) — types, flows, deployment specs
+- [Sketch](docs/sketch.md) — problem statement and approach
+- [Architecture Overview](docs/architecture-overview.md) — architecture overview
+- [Detailed Design](docs/design.md) — session lifecycle, security, deployment
 
 ## License
 
