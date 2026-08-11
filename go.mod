@@ -1,6 +1,8 @@
 module github.com/codeready-toolchain/cli-mcp-server
 
-go 1.25.12
+go 1.26.0
+
+toolchain go1.26.5
 
 require (
 	github.com/codeready-toolchain/mcp-common v0.0.0-20260311065550-14ceedd27660
