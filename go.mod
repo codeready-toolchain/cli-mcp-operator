@@ -5,7 +5,7 @@ go 1.26.0
 toolchain go1.26.5
 
 require (
-	github.com/codeready-toolchain/mcp-common v0.0.0-20260311065550-14ceedd27660
+	github.com/codeready-toolchain/mcp-common v0.0.0-20260811143708-491c72342347
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/prometheus/client_golang v1.22.0
