@@ -166,7 +166,7 @@ Today `buildBasePodSpec` mounts Secret `cli-mcp-investigation-kubeconfig` into e
 
 | Identity | Where | Purpose |
 |---|---|---|
-| `cli-mcp-server` SA | MCP server pod | Manage sandbox pods/secrets **and** whatever derived objects Q1 assigns (NPs, ConfigMaps, CA Secret). In-cluster client. **Not** used for investigation API calls. |
+| `cli-mcp-server` SA | MCP server pod | Sandbox pods plus session auth Secret **create/delete** (no secret get/list/watch). NPs, CA, dummy kubeconfig are the operator (Q1). In-cluster client. **Not** used for investigation API calls. |
 | Investigation tokens | Real kubeconfig Secret on the **proxy** | get/list/watch on every cluster `server` in that kubeconfig. **No `pods/exec`**, no secrets, no impersonate, no VM start/stop, no `nodes/proxy`. Dedicated Secret — do **not** reuse an SA or kubeconfig that already has exec, VM mutate, or `nodes/proxy`. |
 | Sandbox pod SA | Sandbox pods | Exists because OpenShift requires an SA. **No RoleBindings. `automountServiceAccountToken: false`.** Avoids a second in-cluster identity beside the dummy kubeconfig. |
 

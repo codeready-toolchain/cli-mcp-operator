@@ -26,7 +26,7 @@ CliMcpInstance CR        ───────────► reconciler
 admin Secrets (not children):           ├── HMAC Secret (generate-once)
   cli-mcp-<name>-kubeconfig             ├── MCP Deployment (kube-rbac-proxy + server)
   cli-mcp-<name>-tls (non-OpenShift)    ├── Service (ClusterIP)
-                                        ├── MCP SA + Role/RoleBinding (pods/secrets)
+                                        ├── MCP SA + Role/RoleBinding (pods; secret create/delete)
                                         ├── sandbox SA (no RoleBindings, automount false)
                                         └── NetworkPolicy (sandbox :8090 from this MCP)
                                               │
@@ -85,7 +85,9 @@ CSV install modes (Q4), same as claw-operator: **OwnNamespace** and **SingleName
 
 **Ownership (Q5):** admin provides CR + investigation kubeconfig Secret + cluster RBAC (+ TLS Secret on generic Kubernetes). Operator reconciles instance infrastructure (including HMAC Secret generate-once), **warm pool**, **idle GC**, and instance teardown. MCP replicas **always try claim** of instance-labeled unassigned pods, else **create** on demand, wait Ready, HMAC `/exec`; `DELETE /sessions/{id}` deletes that session. Claim is **not** gated on `--warm-pool-size` (Q9: pool size must not roll MCP). No session CRD.
 
-**Two Pod writers:** MCP (claim / on-demand create / last-activity patch / explicit session delete) and operator (unassigned pool create/surplus delete, idle assigned GC, finalizer). Coordinate only via labels. Claim remains a resourceVersion label patch (first writer wins). After a successful claim, MCP must **not** signal replenish (`TriggerReplenish` goes away with `ReconcilePool`); the operator **Watches** instance sandbox Pods (and session Secrets for idle GC) so a claim refills the pool on the next reconcile. Operator must **not** server-side-apply or delete pods that have `session-id` except idle GC / finalizer. Operator must **not** treat MCP-created assigned pods as drift to delete during SSA of “children.” Before deleting an unassigned surplus/hash-rebuild pod, **re-get** it and skip if `session-id` appeared (stale list vs claim race). Overlay/image change: recreate **unassigned** pods only; assigned sessions keep the old spec until DELETE / idle GC / CR delete.
+**Two Pod writers:** MCP (claim / on-demand create / last-activity patch / explicit session delete) and operator (unassigned pool create/surplus delete, idle assigned GC, finalizer). Coordinate only via labels. Claim remains a resourceVersion label patch (first writer wins). After a successful claim, MCP must **not** signal replenish (`TriggerReplenish` goes away with `ReconcilePool`). The operator **Watches** instance sandbox Pods with a predicate: enqueue Create, Delete, and `session-id` appearing (claim refills the pool; a new assigned pod arms idle GC). Drop last-activity-only annotation patches and routine kubelet status (exec readiness probe is 10s; MCP patches last-activity on every `bash`). Ready/Failed/backoff updates enqueue when pool Ready cares (Phase 5). Session Secrets are listed/deleted with the pod; they are not the activity signal. Operator must **not** server-side-apply or delete pods that have `session-id` except idle GC / finalizer. Operator must **not** treat MCP-created assigned pods as drift to delete during SSA of “children.” Before deleting an unassigned surplus/hash-rebuild pod, **re-get** it and skip if `session-id` appeared (stale list vs claim race). Overlay/image change: recreate **unassigned** pods only; assigned sessions keep the old spec until DELETE / idle GC / CR delete.
+
+**Idle timer:** each instance reconcile lists assigned pods, deletes those past `idleTimeout` (`last-activity`, else `created-at`), and returns `requeueAfter` = time until the soonest remaining expiry (CR spec / `idleTimeout` changes also recompute). A quiet session still GCs when that delay fires. Do **not** enqueue or `AddAfter` on every activity patch — `requeueAfter` is a Reconcile result; the next timer fire rereads annotations and reschedules. Create and claim **must** enqueue; if those and last-activity are all filtered, a session can sit with no timer.
 
 ### What the operator reconciles
 
@@ -96,10 +98,12 @@ Namespaced children of a CR `metadata.name=oc` in the CR’s namespace (`cli-mcp
 | Deployment `cli-mcp-oc` | kube-rbac-proxy `:8443` → MCP `127.0.0.1:8080`; N replicas |
 | Service `cli-mcp-oc` | ClusterIP `:8443`; OpenShift serving-cert annotation **when on OpenShift** (Q2, Q13) |
 | ServiceAccount `cli-mcp-oc` | MCP pod identity (in-cluster client for session objects) |
-| Role + RoleBinding | MCP SA: pods, secrets in this namespace (create/get/list/watch/update/patch/delete). Covers claim patch, last-activity, session Secrets. If overlay is a ConfigMap, add get on that object. |
+| Role + RoleBinding | MCP SA: pods create/get/list/watch/update/patch/delete (claim, last-activity). Secrets **create/delete** only (session auth Secrets). No secret get/list/watch. |
 | ServiceAccount `cli-mcp-oc-sandbox` | Sandbox pods. No RoleBindings. Q12 |
 | Secret `cli-mcp-oc-hmac` | MCP↔agent HMAC key (data key `key`). Generate-once; `ownerRef` → CR. Never overwrite if present. |
-| NetworkPolicy sandbox ingress | `:8090` only from this instance’s MCP pods (`cli-mcp.redhat.com/instance` **and** `component=server`) |
+| NetworkPolicy sandbox ingress | `:8090` from pods labeled this instance + `component=server` (not caller identity). Q11 |
+
+**Secret RBAC:** HMAC is a file mount; investigation kubeconfig is a sandbox volume — MCP must not get/list/watch Secrets. Session Secret **create/delete** is namespace-wide (RBAC cannot prefix-limit `cli-mcp-sandbox-auth-*`). Operator `manager-role` keeps namespaced secrets get/list/watch/create/update/patch/delete (HMAC, Ready keys, idle GC/finalizer). That SA is the OperatorGroup target-namespace **secret trust boundary**; do not co-locate unrelated tenant Secrets. Do not `ownerRef` or delete admin kubeconfig/TLS.
 
 TLS for kube-rbac-proxy: mount Secret `cli-mcp-<name>-tls`. On OpenShift the operator sets the Service serving-cert annotation (platform creates the Secret). On generic Kubernetes the **admin** creates that Secret. The operator does not generate certs and does not `ownerRef` this Secret.
 
@@ -147,7 +151,9 @@ Flags the operator sets (existing + small additions):
 | `--instance-name` | **new** — CR `metadata.name` (labels). Required; no default. |
 | `--kubeconfig-secret` | **new** — always `cli-mcp-<name>-kubeconfig` (not a spec field; not `--kubeconfig`). Required; no default. |
 | `--sandbox-service-account` | **new** — operator-owned `cli-mcp-<name>-sandbox` (not a spec field). Required; do **not** default to `cli-mcp-investigation-sa` (Q12). |
-| sandbox resources / extra env / imagePullPolicy | **new** — from `spec.sandbox` so on-demand pods match pool pods (Q16). Operator injects via Deployment args and/or an operator-owned ConfigMap; MCP does not watch the CR. `pkg/session` stays **CRD-agnostic** (no import of `api/v1alpha1`); the operator maps spec → `SandboxConfig`. |
+| `--sandbox-cpu-request`, `--sandbox-cpu-limit`, `--sandbox-memory-request`, `--sandbox-memory-limit` | **new** — `spec.sandbox.resources`. Empty/omitted → DefaultConfig `100m`/`500m`/`128Mi`/`512Mi`. |
+| `--sandbox-image-pull-policy` | **new** — `spec.sandbox.imagePullPolicy`. |
+| `--sandbox-env` | **new** — JSON `[]corev1.EnvVar` (includes `valueFrom`). Local may omit. Overlay change updates these args and rolls MCP (Q9). Operator maps spec → `SandboxConfig` in-process for pool; MCP fills the same struct from flags. No overlay ConfigMap. |
 
 `--kubeconfig` stays the MCP process’s client-go config (empty = in-cluster). It is not the investigation Secret.
 
@@ -161,9 +167,9 @@ Images (Q7, Q16): OLM `relatedImages` → `RELATED_IMAGE_SERVER` / `RELATED_IMAG
 
 **Shared pod spec:** operator pool pods and MCP on-demand pods must call the same builder in `pkg/session` (export today’s `buildBasePodSpec`). The builder takes operator-owned base (SA, automount false, instance/component labels, probes, kubeconfig mount this phase, today’s non-root / drop-caps security context) plus the class overlay from `SandboxConfig` (image, resources, env, imagePullPolicy). Session token env (`SANDBOX_AUTH_TOKEN`) is **assigned / on-demand only**; unassigned pool pods get the token via `POST /assign`, not that env. The operator image may import `pkg/session`. `cmd/server` must not import `internal/controller`. `pkg/session` must not import `api/`. Empty `spec.sandbox.resources` → **today’s DefaultConfig requests/limits**, not BestEffort. Pool recreate hash includes the overlay, not only the image tag. A CR `securityContext` / extra volume field is later (do not stub); the builder still ships today’s pod security context now.
 
-**Investigation kubeconfig Secret** is admin-provided, name `cli-mcp-<name>-kubeconfig`, key `kubeconfig` (as-built: `KUBECONFIG=/config/kubeconfig`). Same convention as TLS (`cli-mcp-<name>-tls`): no spec field, no `ownerRef`. This phase the operator **mounts it on sandbox pods** so tests can run `oc`. Ready checks the Secret exists; it does not parse the kubeconfig. Proxy pass: **unmount from sandbox**, keep the Secret, mount it on the proxy, derive dummy + routes. Do not delete the Secret when the proxy lands.
+**Investigation kubeconfig Secret** is admin-provided, name `cli-mcp-<name>-kubeconfig`, key `kubeconfig` (as-built: `KUBECONFIG=/config/kubeconfig`). Same convention as TLS (`cli-mcp-<name>-tls`): no spec field, no `ownerRef`. This phase the operator **mounts it on sandbox pods** so tests can run `oc`. Ready requires that key present and non-empty (`SecretKeysInvalid` if not); it does not parse the kubeconfig. Proxy pass: **unmount from sandbox**, keep the Secret, mount it on the proxy, derive dummy + routes. Do not delete the Secret when the proxy lands.
 
-**HMAC Secret:** operator creates `cli-mcp-<name>-hmac` if missing (random bytes, key `key`), `ownerRef` → CR, mounts into every MCP replica. Do not overwrite an existing Secret (generate-once). Do not rotate on reconcile — that would invalidate live session tokens. If the Secret is deleted, the operator recreates it and must roll the MCP Deployment (stamp the Secret hash/resourceVersion on the pod template). Local `cmd/server` still uses `--hmac-key-file`. No `spec.hmacKeySecretRef`.
+**HMAC Secret:** operator creates `cli-mcp-<name>-hmac` if missing (random bytes, key `key`), `ownerRef` → CR, mounts into every MCP replica. Do not overwrite an existing Secret (generate-once). Do not rotate on reconcile — that would invalidate live session tokens. If the Secret is deleted, the operator recreates it and must roll the MCP Deployment (stamp the Secret hash/resourceVersion on the pod template). If it exists but `key` is missing or empty, Ready is `SecretKeysInvalid` (do not fill it in). Local `cmd/server` still uses `--hmac-key-file`. No `spec.hmacKeySecretRef`.
 
 ### Instance identity
 
@@ -174,7 +180,7 @@ Q8: CR `metadata.name` is the instance id. Labels **and** annotations live under
 - `cli-mcp.redhat.com/instance=<CR name>` on MCP pods, sandbox pods, session Secrets, and later proxy pods.
 - `cli-mcp.redhat.com/component=sandbox` \| `server` — replace as-built `component=cli-mcp-sandbox`.
 - `cli-mcp.redhat.com/session-id` on assigned sandbox pods and their auth Secrets.
-- Annotations `cli-mcp.redhat.com/created-at` and `cli-mcp.redhat.com/last-activity` (RFC3339). MCP still patches last-activity on `bash`. Operator idle GC reads them. Unassigned pool pods have created-at and **no** session-id (idle GC skips them).
+- Annotations `cli-mcp.redhat.com/created-at` and `cli-mcp.redhat.com/last-activity` (RFC3339). MCP still patches last-activity on `bash`. Operator idle GC **reads** them on reconcile; the Pod watch does **not** enqueue on those patches. Unassigned pool pods have created-at and **no** session-id (idle GC skips them).
 - Children named `cli-mcp-<CR name>` (SA `cli-mcp-<name>-sandbox`, Secret `cli-mcp-<name>-kubeconfig`). CEL: CR name must leave room for the longest child (`cli-mcp-` + name + `-kubeconfig` ≤ 63 → name ≤ 44). Sample name `oc` is fine.
 - `app.kubernetes.io/name=cli-mcp-server` may stay on MCP pods as a secondary label; sandbox NP selectors use instance/component labels above.
 
@@ -184,14 +190,14 @@ Pool/claim/GC selectors are **component + instance**, plus `!session-id` for una
 
 Delete CR destroys the instance. Rolling the MCP Deployment does not.
 
-Q10: **finalizer** `cli-mcp.redhat.com/finalizer` on `CliMcpInstance` lists instance-labeled sandbox pods and session Secrets, deletes them, waits until gone, then removes the finalizer (name stays taken until then). **`ownerRef` → CR** on operator-created children (MCP Deployment, Service, NPs, SAs, Role/RB, HMAC Secret, pool pods). MCP does not set `ownerRef` on on-demand session pods. Never `ownerRef` session pods to the MCP Deployment. Do not delete the admin kubeconfig or TLS Secrets.
+Q10: **finalizer** `cli-mcp.redhat.com/finalizer` on `CliMcpInstance`. On delete, do not re-ensure MCP replicas. Scale the MCP Deployment to 0, wait until this instance’s `component=server` pods are gone, then list instance-labeled sandbox pods and session Secrets, delete them, wait until gone, then remove the finalizer (name stays taken until then). **`ownerRef` → CR** on operator-created children (MCP Deployment, Service, NPs, SAs, Role/RB, HMAC Secret, pool pods). After the finalizer drops, Kubernetes GCs these — do not wait for them in the finalizer. MCP does not set `ownerRef` on on-demand session pods. Never `ownerRef` session pods to the MCP Deployment. Do not delete the admin kubeconfig or TLS Secrets.
 
 ### NetworkPolicy this phase (no proxy)
 
 As-built security, not the proxy topology:
 
 - MCP `:8443` has **no** client-label NetworkPolicy. kube-rbac-proxy (SA token + `/mcp` RBAC) is the front door. Clients are not required to set a pod label (many cannot).
-- Sandbox `:8090` only from **this instance’s** MCP pods (`component=server` + instance). Covers `/exec` and warm-pool `POST /assign`. That NP stays: `/assign` is once-unauthenticated, and HMAC is not kube RBAC.
+- Sandbox `:8090` from pods labeled this instance’s `component=server`. That selector is not identity (spoofable in-namespace). Covers `/exec` and warm-pool `POST /assign`. `/assign` stays once-unauthenticated; HMAC is not kube RBAC. Same namespace trust boundary as secrets: do not co-locate untrusted pods.
 - Sandbox **egress stays unrestricted** (today’s token-replay gap). Closing it without a proxy needs either a kube-API allowlist (a stopgap that must go away when the proxy exists) or the MITM proxy. **Do not** pretend to fix token-replay in this phase.
 
 Q11: operator creates the sandbox ingress NP only. No MCP ingress NP, no egress policy, no EgressFirewall in this phase.
@@ -305,7 +311,7 @@ pkg/session            ✗  api/  (CRD-agnostic SandboxConfig)
 ```
 
 - **`pkg/session`:** CRD-agnostic. Export today’s `buildBasePodSpec` (instance+component labels, dedicated sandbox SA, `automountServiceAccountToken: false`, kubeconfig mount, today’s security context) and merge `SandboxConfig` overlay (image, resources, env, imagePullPolicy). Operator pool pods and MCP on-demand pods call this builder. **Do not** import `api/v1alpha1` from here. **Do not** leave warm-pool replenish or idle-GC tickers here for the operator to call — those move to `internal/controller` (Phase 3 removes `StartPool` / `StartReconciler` / `ReconcilePool` / `TriggerReplenish` / `startCleanupLoop` / `CleanupStale` from the MCP process). Keep `ClaimPod` (always available, not gated on `WarmPoolSize`).
-- **`internal/controller`:** Reconcile, finalizer, HMAC generate-once, child Apply, warm pool, idle GC, status. MCP namespaced Role (pods/secrets) is a **child the reconciler applies**, not `+kubebuilder:rbac` on the manager. Start small (`climcpinstance_controller.go`, `children.go`, `idle.go` in Phase 4, `pool.go` / `status.go` as they grow in Phase 5, `suite_test.go` for envtest). Do not clone claw’s large `claw_*.go` surface up front.
+- **`internal/controller`:** Reconcile, finalizer, HMAC generate-once, child Apply, warm pool, idle GC, status. MCP namespaced Role (pods + secret create/delete) is a **child the reconciler applies**, not `+kubebuilder:rbac` on the manager. Start small (`climcpinstance_controller.go`, `children.go`, `idle.go` in Phase 4, `pool.go` / `status.go` as they grow in Phase 5, `suite_test.go` for envtest). Do not clone claw’s large `claw_*.go` surface up front.
 - **`controller-gen` paths:** `./api/...` and `./internal/...` (and `./cmd/operator/...` if markers land there). Do **not** scan `pkg/` for RBAC. Do **not** copy claw’s `paths="./cmd/..."` if that would imply `cmd/server` is a controller. Operator `manager-role` is cluster/watch RBAC for the controller; it is not the MCP SA Role.
 - **Instance children are Go builders**, not embedded kustomize. `config/` installs the operator. Claw’s `internal/assets` + krusty pattern fits a large third-party operand YAML graph; HMAC, `RELATED_IMAGE_*`, instance labels, and two Pod writers do not.
 
@@ -393,7 +399,7 @@ status:
     - type: WarmPoolReady  # optional; strict unassigned Ready count
 ```
 
-Q15: `Ready` is investigation kubeconfig Secret `cli-mcp-<name>-kubeconfig` present (TLS Secret on generic Kubernetes), HMAC Secret created by the operator, other children applied, and MCP Deployment Available (kube-rbac-proxy + server). Extra Secrets referenced from `spec.sandbox.env` are **not** Ready gates. If `warmPoolSize > 0`, first Ready (and a pool-size increase) waits until `warmPoolReady >= warmPoolDesired`. After that, claim/replenish does not clear `Ready` unless a pool pod is Failed/backoff or the shortfall lasts past a replenish deadline. Assigned sessions are not part of Ready. Always publish `warmPoolReady` / `warmPoolDesired`.
+Q15: `Ready` is investigation kubeconfig Secret `cli-mcp-<name>-kubeconfig` present with non-empty `kubeconfig` (TLS Secret on generic Kubernetes with `tls.crt`/`tls.key`; HMAC with non-empty `key`), other children applied, and MCP Deployment Available (kube-rbac-proxy + server). Missing object → `SecretsNotFound`; missing/empty required key → `SecretKeysInvalid`; do not parse kubeconfig. Extra Secrets referenced from `spec.sandbox.env` are **not** Ready gates. If `warmPoolSize > 0`, first Ready (and a pool-size increase) waits until `warmPoolReady >= warmPoolDesired`. After that, claim/replenish does not clear `Ready` unless a pool pod is Failed/backoff or the shortfall lasts past a replenish deadline. Assigned sessions are not part of Ready. Always publish `warmPoolReady` / `warmPoolDesired`.
 
 ## Implementation Plan
 
@@ -453,7 +459,7 @@ Follow [Repository layout](#repository-layout-target). **No reconciler product l
 Depends on Phase 2 (shared module / `pkg/session` layout). **Breaks** as-built labels, `tarsy` default namespace, and MCP-side pool/GC. Flag-driven `cmd/server` still runs without the operator.
 
 - Export `buildBasePodSpec`; extend `SandboxConfig` (instance name, env, imagePullPolicy, automount, `ResourceRequirements` or equivalent). Merge class overlay there — **not** by importing `api/v1alpha1`.
-- Labels/annotations `cli-mcp.redhat.com` (drop `tarsy.redhat.com`). `--instance-name`, `--kubeconfig-secret`, `--sandbox-service-account` — all required, no production defaults. Fix `--kubeconfig` help text (client-go, not the investigation Secret).
+- Labels/annotations `cli-mcp.redhat.com` (drop `tarsy.redhat.com`). `--instance-name`, `--kubeconfig-secret`, `--sandbox-service-account` — all required, no production defaults. `--sandbox-cpu-request` / `--sandbox-cpu-limit` / `--sandbox-memory-request` / `--sandbox-memory-limit` (DefaultConfig if empty), `--sandbox-image-pull-policy`, `--sandbox-env` as JSON `[]corev1.EnvVar` (local may omit). Fix `--kubeconfig` help text (client-go, not the investigation Secret).
 - Discover / claim / cleanup / `unassignedSelector` must include **instance + component** (as-built is component-only and would mix two CRs).
 - Sandbox pods: dedicated SA name from flags, `automountServiceAccountToken: false`, still mount the real kubeconfig Secret (Q12).
 - **Always claim then create** (`ClaimPod` even when `WarmPoolSize == 0`). Remove `StartPool`, `StartReconciler`, `ReconcilePool`, `TriggerReplenish`, `startCleanupLoop`, `CleanupStale`. Claim + `POST /assign` + on-demand create remain.
@@ -469,15 +475,15 @@ Depends on Phase 2 (shared module / `pkg/session` layout). **Breaks** as-built l
 Depends on Phase 3 (flags + builder + labels the Deployment will inject). Operator **does not** create warm-pool pods yet. `warmPoolSize: 0` (default) + MCP on-demand create is enough to test an instance.
 
 - Types + CEL (CR name ≤ 44 chars so `cli-mcp-<name>-kubeconfig` fits). `replicas` default 1, minimum 1. `idleTimeout` default 30m (consumed here; not passed as an MCP flag).
-- Go child builders: Deployment (server + kube-rbac-proxy, flags from Phase 3 including always-claim — do **not** pass `--warm-pool-size` / `--idle-timeout`), Service, MCP SA + Role/RoleBinding (pods/secrets namespaced), sandbox SA, sandbox ingress NP (instance **and** `component=server`), HMAC Secret generate-once; ownerRefs; instance labels.
-- Operator `manager-role` includes list/watch/delete **pods and secrets** in this phase (finalizer + idle GC), not only Deployments/Services.
-- Ready per Q15 **without pool init** (`warmPoolSize == 0` skips that clause). Missing `cli-mcp-<name>-kubeconfig` or TLS (non-OpenShift) → not Ready. Extra `spec.sandbox.env` Secrets are not Ready gates.
-- Finalizer: delete instance-labeled sandbox pods/secrets, wait, remove finalizer (Q10).
-- **Idle GC:** delete **assigned** session pods/secrets past `idleTimeout` via `last-activity` (else `created-at`), selecting instance + component + session-id. Skip unassigned (no session-id). Do not use as-built component-only `CleanupStale`. Watch instance sandbox Pods (MCP last-activity patches) and `requeueAfter` the next expiry so a quiet session still GCs. Do **not** create or trim unassigned pool pods.
+- Go child builders: Deployment (server + kube-rbac-proxy, flags from Phase 3 including always-claim — do **not** pass `--warm-pool-size` / `--idle-timeout`), Service, MCP SA + Role/RoleBinding (pods + secret create/delete; no secret get/list/watch), sandbox SA, sandbox ingress NP (instance **and** `component=server`), HMAC Secret generate-once; ownerRefs; instance labels.
+- Operator `manager-role` includes namespaced pods and secrets get/list/watch/create/update/patch/delete in this phase (HMAC, Ready keys, finalizer + idle GC), not only Deployments/Services.
+- Ready per Q15 **without pool init** (`warmPoolSize == 0` skips that clause). Missing `cli-mcp-<name>-kubeconfig` or TLS (non-OpenShift) → `SecretsNotFound`. Missing or empty required keys (`kubeconfig`, HMAC `key`, TLS `tls.crt`/`tls.key`) → `SecretKeysInvalid`. Extra `spec.sandbox.env` Secrets are not Ready gates.
+- Finalizer (Q10): on delete, do not re-ensure MCP replicas; scale MCP Deployment to 0; wait until `component=server` pods are gone; then delete instance-labeled sandbox pods/secrets; wait; remove finalizer.
+- **Idle GC:** delete **assigned** session pods/secrets past `idleTimeout` via `last-activity` (else `created-at`), selecting instance + component + session-id. Skip unassigned (no session-id). Do not use as-built component-only `CleanupStale`. Same predicated Pod watch as Two Pod writers: enqueue Create / Delete / `session-id` assignment, **not** last-activity patches or probe status. On reconcile, GC due sessions and `requeueAfter` the soonest remaining expiry so a quiet session still GCs. Do **not** `AddAfter` per bash. Do **not** create or trim unassigned pool pods.
 - Sample cluster RBAC for kube-rbac-proxy / MCP client (Q13). Sample notes for default-deny / OpenShift SCC as needed.
 - **OLM CD on:** master catalog publish, PR check `bundle/` matches `config/`, relatedImages for operator/server/sandbox/kube-rbac-proxy. First catalog is a working instance (on-demand sessions + idle janitor), not a stub manager.
-- **Test tips:** envtest is the natural home for children, Ready (`warmPoolSize == 0`), HMAC generate-once, finalizer, idle assigned GC. First Kind e2e when practical (instance Ready; optional idle assertion if cheap). Pool assertions wait for Phase 5.
-- **Done when:** a CR with `warmPoolSize: 0` gets MCP + HMAC + NP children, goes Ready when admin Secrets exist, GCs idle assigned sessions, and tears down sandboxes on delete. Catalog CD publishes that operator.
+- **Test tips:** envtest is the natural home for children, Ready (`warmPoolSize == 0`, including `SecretKeysInvalid` on empty/wrong keys), HMAC generate-once, finalizer (MCP scaled to 0 and server pods gone before session delete), idle assigned GC (`requeueAfter` + Pod predicate: enqueue create/claim/delete, not last-activity or status-only), and MCP Role verbs (secrets create/delete only). First Kind e2e when practical (instance Ready; optional idle assertion if cheap). Pool assertions wait for Phase 5.
+- **Done when:** a CR with `warmPoolSize: 0` gets MCP + HMAC + NP children, goes Ready when admin Secrets have the required keys, GCs idle assigned sessions, and tears down sandboxes on delete. Catalog CD publishes that operator.
 - **Coverage check:** [Testing](#testing-all-code-phases) against this PR’s diff.
 - **Out of this PR:** operator warm pool, Ready pool-init / no-flap-on-claim (nothing to flap yet).
 
@@ -485,7 +491,7 @@ Depends on Phase 3 (flags + builder + labels the Deployment will inject). Operat
 
 Depends on Phase 4 (instance exists; builder and idle GC already shipped). This is the two-writer pool contract.
 
-- Operator **Watches** instance sandbox Pods (claim does not call `TriggerReplenish`; same watch idle GC already uses). Keep unassigned count == `spec.sandbox.warmPoolSize`; surplus deleted immediately (re-get; skip if `session-id` appeared); recreate on spec/image/env/resources hash (no 2× age-drain). Assigned pods are left on overlay change.
+- Operator **Watches** instance sandbox Pods (claim does not call `TriggerReplenish`; same predicated watch as Phase 4 — assignment enqueues, last-activity does not). Keep unassigned count == `spec.sandbox.warmPoolSize`; surplus deleted immediately (re-get; skip if `session-id` appeared); recreate on spec/image/env/resources hash (no 2× age-drain). Assigned pods are left on overlay change. Enqueue Ready/Failed/backoff here so pool Ready can see them.
 - Ready: first Ready / pool-size increase waits for full pool; claim does not flap (Q15). Idle GC already in Phase 4; do not treat assigned session count as Ready.
 - Operator must not SSA/delete a pod that just gained `session-id` except idle GC / finalizer.
 - **Test tips:** envtest for the two-writer contract (pool size, surplus trim, stale-list vs claim, Ready must not flap on claim). Extend Kind e2e for warm pool if that is the cheap place.
@@ -493,13 +499,15 @@ Depends on Phase 4 (instance exists; builder and idle GC already shipped). This 
 - **Coverage check:** [Testing](#testing-all-code-phases) against this PR’s diff.
 - **Out of this PR:** proxy children, extra sandbox volume knobs / `imagePullSecrets`.
 
-### Phase 6 — First-party install — **no PR in this repo**
+### Phase 6 — First-party catalog consume (test/validation) — **no PR in this repo**
 
-Other repo / GitOps: CatalogSource + OperatorGroup + Subscription + one `CliMcpInstance` + `cli-mcp-<name>-kubeconfig` + TLS (non-OpenShift) + cluster RBAC (+ SCC/PSA as needed). Wire the MCP client only after Ready. Verify `bash` creates a sandbox and other pods cannot hit `:8090`. After Phase 4 at the earliest (pool 0, idle GC on); Phase 5 if that environment wants a warm pool.
+Other repo / GitOps: CatalogSource + OperatorGroup + Subscription + one `CliMcpInstance` + `cli-mcp-<name>-kubeconfig` + TLS (non-OpenShift) + cluster RBAC (+ SCC/PSA as needed). After Phase 4 at the earliest (pool 0, idle GC on); Phase 5 if that environment wants a warm pool.
+
+This path is **test/validation only** (dev cluster, kind, a non-prod overlay). Verify `bash` creates a sandbox and other pods cannot hit `:8090`. **Do not** wire TARSy or any production/stage MCP client — sandbox still mounts the real kubeconfig and egress is unrestricted. First-party production/stage client wiring waits until proxy children and sandbox egress lock exist and pass the isolation checks in the proxy HOW. That is a **later implementation plan**, not Phase 7’s doc rewrite.
 
 ### Phase 7 — Return to proxy design — **no PR in this repo (docs / later PRs)**
 
-Rewrite [credential-proxy-design.md](credential-proxy-design.md) HOW against this operator. Resume proxy Q2–Q12. Then a **new** implementation plan for proxy children — not more phases of 1–5.
+Rewrite [credential-proxy-design.md](credential-proxy-design.md) HOW against this operator. Resume proxy Q2–Q12. Then a **new** implementation plan for proxy children — not more phases of 1–5. Shipping that plan (not this rewrite) is what unlocks production/stage first-party MCP client wiring.
 
 ## Out of scope / non-goals
 
@@ -509,7 +517,7 @@ Rewrite [credential-proxy-design.md](credential-proxy-design.md) HOW against thi
 - Changing any first-party MCP client wiring in this phase.
 - Namespace EgressFirewall to kube API IPs (stopgap rejected once a proxy exists; not a substitute for the operator).
 - Helm chart in v1 (kustomize + OLM cover install; Helm can wrap the same manifests later).
-- Implementing a first-party production install until the operator exists.
+- First-party production/stage install or MCP client wiring until proxy children and sandbox egress lock exist (operator catalog consume in test/dev is Phase 6).
 - Operator-generated TLS certificates. Operator-minted investigation tokens.
 - Copying claw’s `WATCH_NAMESPACE` / operator-config CR, or claw `internal/assets` kustomize-in-operator for instance children (Go builders instead).
 - Unsuffixed `Containerfile` for the operator (keep `Containerfile.operator` / `.server` / `.agent`).
@@ -519,4 +527,7 @@ Rewrite [credential-proxy-design.md](credential-proxy-design.md) HOW against thi
 - `spec.serverImage` / `status.resolvedServerImage`. MCP image is `RELATED_IMAGE_SERVER` on the operator; look at the Deployment. Dev/test overlays that env.
 - `spec.investigationKubeconfigSecretRef`. Admin Secret is `cli-mcp-<name>-kubeconfig`. Proxy unmounts it from the sandbox; does not delete it.
 - Gating MCP claim on `--warm-pool-size` (would roll MCP on pool `0 ↔ N` and contradict Q9).
+- Enqueueing the instance reconciler on every last-activity patch, or a custom `AddAfter` per bash (predicate + `requeueAfter` reread).
+- HMAC or mTLS on `/assign`, or a VAP that only the MCP SA may set `component=server` (Q11: labels are not identity; the namespace is the trust boundary).
+- MCP Secret get/list/watch, or RBAC `resourceNames` / label selectors for session Secrets (API cannot). ValidatingAdmissionPolicy to restrict MCP secret delete to `cli-mcp-sandbox-auth-*` (later; residual delete-by-name).
 - Copying claw’s `make test` `coverpkg=./internal/...` (this repo must keep `pkg/` coverage).
