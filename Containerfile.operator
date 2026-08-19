@@ -1,0 +1,20 @@
+FROM mirror.gcr.io/library/golang:1.26-alpine AS go-builder
+RUN apk add --no-cache git make
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/operator/ cmd/operator/
+COPY api/ api/
+COPY internal/ internal/
+COPY pkg/ pkg/
+ARG GIT_COMMIT=dev
+ARG BUILD_TIME=unknown
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-X github.com/codeready-toolchain/cli-mcp-operator/pkg/version.commitOverride=${GIT_COMMIT} -X github.com/codeready-toolchain/cli-mcp-operator/pkg/version.BuildTime=${BUILD_TIME}" \
+    -o manager ./cmd/operator
+
+FROM gcr.io/distroless/static-debian12:nonroot
+WORKDIR /
+COPY --from=go-builder /workspace/manager /manager
+USER 65532:65532
+ENTRYPOINT ["/manager"]

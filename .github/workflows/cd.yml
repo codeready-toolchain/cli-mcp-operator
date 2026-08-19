@@ -17,6 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: cli-mcp-operator
+            image: codeready-toolchain/cli-mcp-operator
+            containerfile: Containerfile.operator
           - name: cli-mcp-server
             image: codeready-toolchain/cli-mcp-server
             containerfile: Containerfile.server

@@ -1,0 +1,9 @@
+apiVersion: cli-mcp.redhat.com/v1alpha1
+kind: CliMcpInstance
+metadata:
+  labels:
+    app.kubernetes.io/name: cli-mcp-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: oc
+spec:
+  # Typed spec fields land in Phase 4. Stub CR only.

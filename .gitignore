@@ -45,6 +45,12 @@ config.local.json
 /dist/
 /server
 /agent
+cover.out
+Dockerfile.cross
+
+# Temporary kustomize overlays (make deploy / make bundle)
+/config/.deploy/
+/config/.bundle/
 
 # Temporary files
 /tmp/

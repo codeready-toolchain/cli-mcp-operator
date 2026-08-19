@@ -13,7 +13,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/agent"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"

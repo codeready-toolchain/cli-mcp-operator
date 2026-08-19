@@ -1,0 +1,221 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "cli-mcp.redhat.com/v1alpha1",
+          "kind": "CliMcpInstance",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "cli-mcp-operator"
+            },
+            "name": "oc"
+          },
+          "spec": null
+        }
+      ]
+    capabilities: Basic Install
+    createdAt: "REPLACE_CREATED_AT"
+    operators.operatorframework.io/builder: operator-sdk-v1.42.3
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+  name: cli-mcp-operator.v0.0.1
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: CliMcpInstance is the Schema for the climcpinstances API.
+      displayName: Cli Mcp Instance
+      kind: CliMcpInstance
+      name: climcpinstances.cli-mcp.redhat.com
+      version: v1alpha1
+  description: Kubernetes operator that manages CLI MCP server instances (sandbox
+    bash sessions).
+  displayName: CLI MCP Operator
+  icon:
+  - base64data: ""
+    mediatype: image/png
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - cli-mcp.redhat.com
+          resources:
+          - climcpinstances
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - cli-mcp.redhat.com
+          resources:
+          - climcpinstances/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - cli-mcp.redhat.com
+          resources:
+          - climcpinstances/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - authentication.k8s.io
+          resources:
+          - tokenreviews
+          verbs:
+          - create
+        - apiGroups:
+          - authorization.k8s.io
+          resources:
+          - subjectaccessreviews
+          verbs:
+          - create
+        serviceAccountName: cli-mcp-operator-controller-manager
+      deployments:
+      - label:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/name: cli-mcp-operator
+          control-plane: controller-manager
+        name: cli-mcp-operator-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: cli-mcp-operator
+              control-plane: controller-manager
+          strategy: {}
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                app.kubernetes.io/name: cli-mcp-operator
+                control-plane: controller-manager
+            spec:
+              containers:
+              - args:
+                - --metrics-bind-address=:8443
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                command:
+                - /manager
+                env:
+                - name: RELATED_IMAGE_SERVER
+                  value: REPLACE_SERVER_IMAGE
+                - name: RELATED_IMAGE_SANDBOX
+                  value: REPLACE_SANDBOX_IMAGE
+                - name: RELATED_IMAGE_KUBE_RBAC_PROXY
+                  value: REPLACE_KUBE_RBAC_PROXY_IMAGE
+                image: REPLACE_OPERATOR_IMAGE
+                imagePullPolicy: IfNotPresent
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+              serviceAccountName: cli-mcp-operator-controller-manager
+              terminationGracePeriodSeconds: 10
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        serviceAccountName: cli-mcp-operator-controller-manager
+    strategy: deployment
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  - supported: true
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: false
+    type: AllNamespaces
+  keywords:
+  - mcp
+  - cli
+  - sandbox
+  - developer-sandbox
+  links:
+  - name: CLI MCP Operator
+    url: https://github.com/codeready-toolchain/cli-mcp-operator
+  maintainers:
+  - email: devsandbox@redhat.com
+    name: Developer Sandbox Team
+  maturity: alpha
+  minKubeVersion: 1.28.0
+  provider:
+    name: Red Hat
+    url: https://developers.redhat.com
+  relatedImages:
+  - image: REPLACE_OPERATOR_IMAGE
+    name: manager
+  - image: REPLACE_SERVER_IMAGE
+    name: server
+  - image: REPLACE_SANDBOX_IMAGE
+    name: sandbox
+  - image: REPLACE_KUBE_RBAC_PROXY_IMAGE
+    name: kube-rbac-proxy
+  version: 0.0.1
