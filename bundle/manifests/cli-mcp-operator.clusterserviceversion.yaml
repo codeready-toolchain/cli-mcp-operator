@@ -14,7 +14,7 @@ metadata:
             },
             "name": "oc"
           },
-          "spec": null
+          "spec": {}
         }
       ]
     capabilities: Basic Install

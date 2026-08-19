@@ -5,5 +5,5 @@ metadata:
     app.kubernetes.io/name: cli-mcp-operator
     app.kubernetes.io/managed-by: kustomize
   name: oc
-spec:
-  # Typed spec fields land in Phase 4. Stub CR only.
+# Typed spec fields land in Phase 4. Stub CR only.
+spec: {}
