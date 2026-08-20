@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/session"
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/version"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/version"
 	"github.com/codeready-toolchain/mcp-common/pkg/middleware"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

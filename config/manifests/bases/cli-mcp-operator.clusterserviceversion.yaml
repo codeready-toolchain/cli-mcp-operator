@@ -1,0 +1,65 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+    createdAt: REPLACE_CREATED_AT
+    operators.operatorframework.io/builder: operator-sdk-v1.42.3
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+  name: cli-mcp-operator.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: CliMcpInstance is the Schema for the climcpinstances API.
+      displayName: Cli Mcp Instance
+      kind: CliMcpInstance
+      name: climcpinstances.cli-mcp.redhat.com
+      version: v1alpha1
+  description: Kubernetes operator that manages CLI MCP server instances (sandbox
+    bash sessions).
+  displayName: CLI MCP Operator
+  icon:
+  - base64data: ""
+    mediatype: image/png
+  install:
+    spec:
+      deployments: []
+    strategy: deployment
+  installModes:
+  - supported: true
+    type: OwnNamespace
+  - supported: true
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: false
+    type: AllNamespaces
+  keywords:
+  - mcp
+  - cli
+  - sandbox
+  - developer-sandbox
+  links:
+  - name: CLI MCP Operator
+    url: https://github.com/codeready-toolchain/cli-mcp-operator
+  maintainers:
+  - email: devsandbox@redhat.com
+    name: Developer Sandbox Team
+  maturity: alpha
+  minKubeVersion: 1.28.0
+  provider:
+    name: Red Hat
+    url: https://developers.redhat.com
+  relatedImages:
+  - image: REPLACE_OPERATOR_IMAGE
+    name: manager
+  - image: REPLACE_SERVER_IMAGE
+    name: server
+  - image: REPLACE_SANDBOX_IMAGE
+    name: sandbox
+  - image: REPLACE_KUBE_RBAC_PROXY_IMAGE
+    name: kube-rbac-proxy
+  version: 0.0.0

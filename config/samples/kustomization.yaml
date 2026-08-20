@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- cli-mcp_v1alpha1_climcpinstance.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

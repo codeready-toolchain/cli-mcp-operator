@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/sandbox"
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/version"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/sandbox"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/version"
 )
 
 const shutdownTimeout = 310 * time.Second // MaxTimeout (300s) + 10s buffer

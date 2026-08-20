@@ -1,12 +1,10 @@
-.git
+# Shared build context: each Containerfile COPY's its own subset.
+# Do not ignore api/, internal/, pkg/, or cmd/ — different images need different trees.
 bin/
-dist/
-temp/
+.git
+cover.out
+coverage.html
 docs/
 openspec/
-.vscode/
-.idea/
-*.md
-*.log
-.cursor/
 .github/
+*.md

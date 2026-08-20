@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
