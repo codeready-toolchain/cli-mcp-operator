@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/sandbox"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/agent"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/sandbox"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

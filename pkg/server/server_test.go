@@ -10,8 +10,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/tools"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/agent"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

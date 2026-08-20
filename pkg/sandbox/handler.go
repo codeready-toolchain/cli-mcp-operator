@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeready-toolchain/cli-mcp-server/pkg/agent"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/agent"
 )
 
 // maxRequestBody limits POST bodies for /exec and /assign.

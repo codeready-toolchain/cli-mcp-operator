@@ -56,6 +56,13 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - test/e2e
+      - test/utils
+    rules:
+      # Kubebuilder/Ginkgo envtest tests use dot imports by convention.
+      - path: internal/controller/.*_test\.go
+        linters:
+          - revive
 formatters:
   enable:
     - gofmt
