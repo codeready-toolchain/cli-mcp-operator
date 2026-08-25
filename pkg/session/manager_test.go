@@ -27,13 +27,22 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-const testNamespace = "tarsy"
+const (
+	testNamespace = "cli-mcp"
+	testInstance  = "oc"
+	testSA        = "cli-mcp-oc-sandbox"
+	//nolint:gosec // G101: K8s Secret resource name, not a credential
+	testKubeSecret = "cli-mcp-oc-kubeconfig"
+)
 
 func newTestConfig() SandboxConfig {
 	cfg := DefaultConfig()
 	cfg.HMACKey = "test-hmac-key"
 	cfg.Image = "quay.io/codeready-toolchain/cli-mcp-sandbox:v0.1.0-test"
 	cfg.Namespace = testNamespace
+	cfg.InstanceName = testInstance
+	cfg.ServiceAccountName = testSA
+	cfg.KubeconfigSecret = testKubeSecret
 	return cfg
 }
 
@@ -62,12 +71,13 @@ func readyPod(sessionID, ip string, createdAt time.Time) corev1.Pod {
 			Namespace:         testNamespace,
 			CreationTimestamp: metav1.NewTime(createdAt),
 			Labels: map[string]string{
-				labelSessionID: sessionID,
-				labelComponent: componentValue,
+				LabelSessionID: sessionID,
+				LabelComponent: ComponentSandbox,
+				LabelInstance:  testInstance,
 			},
 			Annotations: map[string]string{
-				annotationCreatedAt:    createdAt.Format(time.RFC3339),
-				annotationLastActivity: createdAt.Format(time.RFC3339),
+				AnnotationCreatedAt:    createdAt.Format(time.RFC3339),
+				AnnotationLastActivity: createdAt.Format(time.RFC3339),
 			},
 		},
 		Status: corev1.PodStatus{
@@ -185,6 +195,46 @@ func TestNewSessionManagerValidation(t *testing.T) {
 		assert.Contains(t, err.Error(), "Image")
 	})
 
+	t.Run("rejects empty InstanceName", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.InstanceName = ""
+
+		_, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "InstanceName")
+	})
+
+	t.Run("rejects empty Namespace", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.Namespace = ""
+
+		_, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "Namespace")
+	})
+
+	t.Run("rejects empty ServiceAccountName", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.ServiceAccountName = ""
+
+		_, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ServiceAccountName")
+	})
+
+	t.Run("rejects empty KubeconfigSecret", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.KubeconfigSecret = ""
+
+		_, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "KubeconfigSecret")
+	})
+
 	t.Run("accepts valid config", func(t *testing.T) {
 		mgr, err := NewSessionManager(client, newTestConfig(), slog.Default())
 
@@ -268,6 +318,28 @@ func TestGetOrCreatePod(t *testing.T) {
 		// then
 		require.NoError(t, err)
 		assert.Equal(t, "10.0.0.10", ip)
+	})
+
+	t.Run("does not discover a pod from another instance", func(t *testing.T) {
+		other := readyPod("inv-other", "10.0.0.9", time.Now())
+		other.Name = "cli-mcp-sandbox-aws-inv-other"
+		other.Labels[LabelInstance] = "aws"
+		mgr := newTestManager(t, other)
+		ctx := t.Context()
+		done := make(chan error, 1)
+		go func() { done <- markPodReady(mgr, "inv-other", "10.0.0.8") }()
+
+		ip, err := mgr.GetOrCreatePod(ctx, "inv-other")
+
+		require.NoError(t, <-done)
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.8", ip, "should create a new pod for this instance, not reuse the other instance's pod")
+		pods, listErr := mgr.clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
+			LabelSelector: AssignedSelector(testInstance, "inv-other"),
+		})
+		require.NoError(t, listErr)
+		require.Len(t, pods.Items, 1)
+		assert.Equal(t, testInstance, pods.Items[0].Labels[LabelInstance])
 	})
 
 	t.Run("rejects invalid session ID", func(t *testing.T) {
@@ -360,12 +432,13 @@ func TestBuildPodSpec(t *testing.T) {
 	assert.Equal(t, testNamespace, pod.Namespace)
 
 	// then — labels
-	assert.Equal(t, "inv-spec", pod.Labels[labelSessionID])
-	assert.Equal(t, componentValue, pod.Labels[labelComponent])
+	assert.Equal(t, "inv-spec", pod.Labels[LabelSessionID])
+	assert.Equal(t, ComponentSandbox, pod.Labels[LabelComponent])
+	assert.Equal(t, testInstance, pod.Labels[LabelInstance])
 
 	// then — annotations
-	assert.NotEmpty(t, pod.Annotations[annotationCreatedAt])
-	assert.NotEmpty(t, pod.Annotations[annotationLastActivity])
+	assert.NotEmpty(t, pod.Annotations[AnnotationCreatedAt])
+	assert.NotEmpty(t, pod.Annotations[AnnotationLastActivity])
 
 	// then — pod security context (no hardcoded UID/GID; OpenShift assigns from namespace range)
 	require.NotNil(t, pod.Spec.SecurityContext)
@@ -406,6 +479,12 @@ func TestBuildPodSpec(t *testing.T) {
 	assert.True(t, envNames["KUBECONFIG"])
 	assert.True(t, envNames["HOME"])
 	assert.True(t, envNames["SANDBOX_AUTH_TOKEN"])
+
+	require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
+	assert.False(t, *pod.Spec.AutomountServiceAccountToken)
+	assert.Equal(t, testSA, pod.Spec.ServiceAccountName)
+	require.Len(t, pod.Spec.Volumes, 2)
+	assert.Equal(t, testKubeSecret, pod.Spec.Volumes[0].Secret.SecretName)
 }
 
 func TestBuildAuthSecret(t *testing.T) {
@@ -414,13 +493,14 @@ func TestBuildAuthSecret(t *testing.T) {
 	token := computeToken(mgr.config.HMACKey, "inv-sec")
 
 	// when
-	secret := buildAuthSecret(testNamespace, "inv-sec", token)
+	secret := buildAuthSecret(testNamespace, testInstance, "inv-sec", token)
 
 	// then
 	assert.Equal(t, secretNamePrefix+"inv-sec", secret.Name)
 	assert.Equal(t, testNamespace, secret.Namespace)
-	assert.Equal(t, "inv-sec", secret.Labels[labelSessionID])
-	assert.Equal(t, componentValue, secret.Labels[labelComponent])
+	assert.Equal(t, "inv-sec", secret.Labels[LabelSessionID])
+	assert.Equal(t, ComponentSandbox, secret.Labels[LabelComponent])
+	assert.Equal(t, testInstance, secret.Labels[LabelInstance])
 	assert.Equal(t, token, secret.StringData["token"])
 }
 
@@ -498,7 +578,7 @@ func TestCleanupSession(t *testing.T) {
 	mgr.cache.Set("inv-clean", "10.0.0.5", podNamePrefix+"inv-clean")
 
 	ctx := context.Background()
-	secret := buildAuthSecret(testNamespace, "inv-clean", "tok")
+	secret := buildAuthSecret(testNamespace, testInstance, "inv-clean", "tok")
 	_, err := mgr.clientset.CoreV1().Secrets(testNamespace).Create(ctx, secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
@@ -512,61 +592,13 @@ func TestCleanupSession(t *testing.T) {
 	assert.False(t, ok, "cache entry should be cleared")
 
 	pods, err := mgr.clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s", labelSessionID, "inv-clean"),
+		LabelSelector: AssignedSelector(testInstance, "inv-clean"),
 	})
 	require.NoError(t, err)
 	assert.Empty(t, pods.Items, "pods should be deleted")
 
 	_, err = mgr.clientset.CoreV1().Secrets(testNamespace).Get(ctx, secretNamePrefix+"inv-clean", metav1.GetOptions{})
 	assert.Error(t, err, "secret should be deleted")
-}
-
-func TestCleanupStale(t *testing.T) {
-	t.Run("stale pod is cleaned up", func(t *testing.T) {
-		// given
-		staleTime := time.Now().Add(-2 * time.Hour)
-		stalePod := readyPod("stale-1", "10.0.0.1", staleTime)
-		mgr := newTestManager(t, stalePod)
-
-		// when
-		cleaned, err := mgr.CleanupStale(context.Background())
-
-		// then
-		require.NoError(t, err)
-		assert.Equal(t, 1, cleaned)
-	})
-
-	t.Run("fresh pod is preserved", func(t *testing.T) {
-		// given
-		freshPod := readyPod("fresh-1", "10.0.0.2", time.Now())
-		mgr := newTestManager(t, freshPod)
-
-		// when
-		cleaned, err := mgr.CleanupStale(context.Background())
-
-		// then
-		require.NoError(t, err)
-		assert.Equal(t, 0, cleaned)
-
-		pods, err := mgr.clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{})
-		require.NoError(t, err)
-		assert.Len(t, pods.Items, 1)
-	})
-
-	t.Run("falls back to created-at when last-activity is missing", func(t *testing.T) {
-		// given
-		staleTime := time.Now().Add(-2 * time.Hour)
-		pod := readyPod("no-activity", "10.0.0.3", staleTime)
-		delete(pod.Annotations, annotationLastActivity)
-		mgr := newTestManager(t, pod)
-
-		// when
-		cleaned, err := mgr.CleanupStale(context.Background())
-
-		// then
-		require.NoError(t, err)
-		assert.Equal(t, 1, cleaned)
-	})
 }
 
 func TestExecuteCommand(t *testing.T) {
@@ -704,7 +736,7 @@ func TestExecuteCommand(t *testing.T) {
 			if getErr != nil {
 				return false
 			}
-			return updated.Annotations[annotationLastActivity] != oldActivity
+			return updated.Annotations[AnnotationLastActivity] != oldActivity
 		}, time.Second, 10*time.Millisecond, "last-activity should be patched using pre-Execute podName")
 	})
 }

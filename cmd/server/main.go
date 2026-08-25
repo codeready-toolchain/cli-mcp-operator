@@ -28,15 +28,24 @@ func main() {
 	fmt.Fprintf(os.Stderr, "cli-mcp-server %s (built %s)\n", version.Commit, version.BuildTime)
 
 	var (
-		address      string
-		transport    string
-		stateless    bool
-		namespace    string
-		sandboxImage string
-		kubeconfig   string
-		hmacKeyFile  string
-		idleTimeout  time.Duration
-		warmPoolSize int
+		address               string
+		transport             string
+		stateless             bool
+		namespace             string
+		instanceName          string
+		sandboxImage          string
+		kubeconfig            string
+		kubeconfigSecret      string
+		sandboxServiceAccount string
+		hmacKeyFile           string
+		cpuRequest            string
+		cpuLimit              string
+		memoryRequest         string
+		memoryLimit           string
+		imagePullPolicy       string
+		sandboxEnv            string
+		idleTimeout           time.Duration
+		warmPoolSize          int
 	)
 
 	rootCmd := &cobra.Command{
@@ -44,15 +53,24 @@ func main() {
 		Short: "Sandboxed exec environment MCP server for LLM investigation",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runServer(runConfig{
-				address:      address,
-				transport:    transport,
-				stateless:    stateless,
-				namespace:    namespace,
-				sandboxImage: sandboxImage,
-				kubeconfig:   kubeconfig,
-				hmacKeyFile:  hmacKeyFile,
-				idleTimeout:  idleTimeout,
-				warmPoolSize: warmPoolSize,
+				address:               address,
+				transport:             transport,
+				stateless:             stateless,
+				namespace:             namespace,
+				instanceName:          instanceName,
+				sandboxImage:          sandboxImage,
+				kubeconfig:            kubeconfig,
+				kubeconfigSecret:      kubeconfigSecret,
+				sandboxServiceAccount: sandboxServiceAccount,
+				hmacKeyFile:           hmacKeyFile,
+				cpuRequest:            cpuRequest,
+				cpuLimit:              cpuLimit,
+				memoryRequest:         memoryRequest,
+				memoryLimit:           memoryLimit,
+				imagePullPolicy:       imagePullPolicy,
+				sandboxEnv:            sandboxEnv,
+				idleTimeout:           idleTimeout,
+				warmPoolSize:          warmPoolSize,
 			})
 		},
 	}
@@ -60,12 +78,21 @@ func main() {
 	rootCmd.Flags().StringVarP(&address, "address", "a", "localhost:8080", "Server address (host:port)")
 	rootCmd.Flags().StringVarP(&transport, "transport", "t", "stdio", "Transport (stdio, http)")
 	rootCmd.Flags().BoolVar(&stateless, "stateless", false, "Enable stateless mode (required for HTTP)")
-	rootCmd.Flags().StringVar(&namespace, "namespace", "tarsy", "Namespace for sandbox pods")
+	rootCmd.Flags().StringVar(&namespace, "namespace", "", "Namespace for sandbox pods (required)")
+	rootCmd.Flags().StringVar(&instanceName, "instance-name", "", "Instance id used on sandbox labels (required)")
 	rootCmd.Flags().StringVar(&sandboxImage, "sandbox-image", "", "Container image for sandbox pods (required)")
-	rootCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig for sandbox pods")
+	rootCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig for the MCP process's Kubernetes client (empty = in-cluster); not the investigation Secret")
+	rootCmd.Flags().StringVar(&kubeconfigSecret, "kubeconfig-secret", "", "Name of the investigation kubeconfig Secret mounted into sandbox pods (required)")
+	rootCmd.Flags().StringVar(&sandboxServiceAccount, "sandbox-service-account", "", "ServiceAccount name for sandbox pods (required)")
 	rootCmd.Flags().StringVar(&hmacKeyFile, "hmac-key-file", "", "Path to HMAC shared secret file (required)")
-	rootCmd.Flags().DurationVar(&idleTimeout, "idle-timeout", 30*time.Minute, "Idle timeout for sandbox pods")
-	rootCmd.Flags().IntVar(&warmPoolSize, "warm-pool-size", 0, "Pre-warmed sandbox pods (0 = disabled)")
+	rootCmd.Flags().StringVar(&cpuRequest, "sandbox-cpu-request", "", "Sandbox CPU request (empty = 100m)")
+	rootCmd.Flags().StringVar(&cpuLimit, "sandbox-cpu-limit", "", "Sandbox CPU limit (empty = 500m)")
+	rootCmd.Flags().StringVar(&memoryRequest, "sandbox-memory-request", "", "Sandbox memory request (empty = 128Mi)")
+	rootCmd.Flags().StringVar(&memoryLimit, "sandbox-memory-limit", "", "Sandbox memory limit (empty = 512Mi)")
+	rootCmd.Flags().StringVar(&imagePullPolicy, "sandbox-image-pull-policy", "", "Sandbox imagePullPolicy (Always, Never, IfNotPresent)")
+	rootCmd.Flags().StringVar(&sandboxEnv, "sandbox-env", "", "JSON []corev1.EnvVar overlay for sandbox pods")
+	rootCmd.Flags().DurationVar(&idleTimeout, "idle-timeout", 30*time.Minute, "Accepted for CLI compatibility; MCP does not idle-GC (operator owns that)")
+	rootCmd.Flags().IntVar(&warmPoolSize, "warm-pool-size", 0, "Accepted for CLI compatibility; MCP does not replenish a pool (operator owns that)")
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -73,23 +100,29 @@ func main() {
 }
 
 type runConfig struct {
-	address      string
-	transport    string
-	stateless    bool
-	namespace    string
-	sandboxImage string
-	kubeconfig   string
-	hmacKeyFile  string
-	idleTimeout  time.Duration
-	warmPoolSize int
+	address               string
+	transport             string
+	stateless             bool
+	namespace             string
+	instanceName          string
+	sandboxImage          string
+	kubeconfig            string
+	kubeconfigSecret      string
+	sandboxServiceAccount string
+	hmacKeyFile           string
+	cpuRequest            string
+	cpuLimit              string
+	memoryRequest         string
+	memoryLimit           string
+	imagePullPolicy       string
+	sandboxEnv            string
+	idleTimeout           time.Duration
+	warmPoolSize          int
 }
 
 func runServer(cfg runConfig) error {
 	if err := server.ValidateTransportFlags(cfg.transport, cfg.stateless, cfg.address); err != nil {
 		return err
-	}
-	if cfg.sandboxImage == "" {
-		return fmt.Errorf("--sandbox-image is required")
 	}
 	if cfg.idleTimeout <= 0 {
 		return fmt.Errorf("--idle-timeout must be greater than zero")
@@ -98,6 +131,10 @@ func runServer(cfg runConfig) error {
 		return fmt.Errorf("--warm-pool-size must not be negative")
 	}
 	hmacKey, err := loadHMACKey(cfg.hmacKeyFile)
+	if err != nil {
+		return err
+	}
+	sandboxCfg, err := buildSandboxConfig(cfg, hmacKey)
 	if err != nil {
 		return err
 	}
@@ -112,13 +149,6 @@ func runServer(cfg runConfig) error {
 		return fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
 
-	sandboxCfg := session.DefaultConfig()
-	sandboxCfg.Image = cfg.sandboxImage
-	sandboxCfg.HMACKey = hmacKey
-	sandboxCfg.Namespace = cfg.namespace
-	sandboxCfg.IdleTimeout = cfg.idleTimeout
-	sandboxCfg.WarmPoolSize = cfg.warmPoolSize
-
 	mgr, err := session.NewSessionManager(clientset, sandboxCfg, logger)
 	if err != nil {
 		return fmt.Errorf("failed to create session manager: %w", err)
@@ -130,11 +160,6 @@ func runServer(cfg runConfig) error {
 	// Shared context cancelled on SIGTERM/SIGINT — stops background workers for both transports.
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
-
-	startCleanupLoop(ctx, mgr, logger)
-	if cfg.warmPoolSize > 0 {
-		mgr.StartPool(ctx)
-	}
 
 	switch cfg.transport {
 	case "http":
@@ -190,26 +215,6 @@ func serveStdio(ctx context.Context, mcpServer *mcp.Server, logger *slog.Logger)
 	return nil
 }
 
-func startCleanupLoop(ctx context.Context, mgr *session.SessionManager, logger *slog.Logger) {
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				cleaned, err := mgr.CleanupStale(ctx)
-				if err != nil {
-					logger.Error("stale cleanup failed", "error", err)
-				} else if cleaned > 0 {
-					logger.Info("cleaned stale sessions", "count", cleaned)
-				}
-			}
-		}
-	}()
-}
-
 func buildClientset(kubeconfigPath string) (kubernetes.Interface, error) {
 	var config *rest.Config
 	var err error
@@ -230,6 +235,6 @@ type k8sHealthChecker struct {
 }
 
 func (c *k8sHealthChecker) CheckHealth(ctx context.Context) error {
-	_, err := c.clientset.CoreV1().Namespaces().Get(ctx, c.namespace, metav1.GetOptions{})
+	_, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{Limit: 1})
 	return err
 }

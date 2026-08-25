@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -16,20 +17,12 @@ import (
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/agent"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
-	labelSessionID = "tarsy.redhat.com/session-id"
-	labelComponent = "tarsy.redhat.com/component"
-	componentValue = "cli-mcp-sandbox"
-
-	annotationCreatedAt    = "tarsy.redhat.com/created-at"
-	annotationLastActivity = "tarsy.redhat.com/last-activity"
-
 	podNamePrefix = "cli-mcp-sandbox-"
 	//nolint:gosec // G101: K8s resource names, not credentials
 	secretNamePrefix = "cli-mcp-sandbox-auth-"
@@ -53,8 +46,9 @@ type SessionManager struct {
 	logger      *slog.Logger
 }
 
-// NewSessionManager creates a SessionManager with a default PodCache and agent client.
-// It returns an error if required config fields (HMACKey, Image) are missing.
+// NewSessionManager creates a SessionManager with a default PodCache, agent
+// client, and claim helper. Claim is always available; the MCP process does
+// not replenish a warm pool or idle-GC assigned pods.
 func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, logger *slog.Logger) (*SessionManager, error) {
 	if config.HMACKey == "" {
 		return nil, fmt.Errorf("SandboxConfig.HMACKey must not be empty")
@@ -62,13 +56,27 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 	if config.Image == "" {
 		return nil, fmt.Errorf("SandboxConfig.Image must not be empty")
 	}
+	if config.InstanceName == "" {
+		return nil, fmt.Errorf("SandboxConfig.InstanceName must not be empty")
+	}
+	if config.Namespace == "" {
+		return nil, fmt.Errorf("SandboxConfig.Namespace must not be empty")
+	}
+	if config.ServiceAccountName == "" {
+		return nil, fmt.Errorf("SandboxConfig.ServiceAccountName must not be empty")
+	}
+	if config.KubeconfigSecret == "" {
+		return nil, fmt.Errorf("SandboxConfig.KubeconfigSecret must not be empty")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
+	config.AgentPort = cmp.Or(config.AgentPort, DefaultConfig().AgentPort)
 	mgr := &SessionManager{
 		clientset: clientset,
 		config:    config,
 		cache:     NewPodCache(defaultCacheTTL),
+		pool:      NewWarmPool(clientset, config, logger),
 		// Timeout 0: command duration is bounded by the ExecRequest timeout, not the HTTP client.
 		agentClient: agent.NewAgentClient(
 			agent.WithPort(config.AgentPort),
@@ -76,21 +84,10 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 		),
 		logger: logger,
 	}
-	if config.WarmPoolSize > 0 {
-		mgr.pool = NewWarmPool(clientset, config, logger)
-	}
 	return mgr, nil
 }
 
-// StartPool starts the warm pool reconciler if the pool is enabled.
-// It should be called once after NewSessionManager during server startup.
-func (m *SessionManager) StartPool(ctx context.Context) {
-	if m.pool != nil {
-		m.pool.StartReconciler(ctx)
-	}
-}
-
-// Pool returns the warm pool (nil when disabled). Exposed for testing.
+// Pool returns the claim helper. Exposed for testing.
 func (m *SessionManager) Pool() *WarmPool {
 	return m.pool
 }
@@ -118,7 +115,7 @@ func ValidateSessionID(sessionID string) error {
 }
 
 // GetOrCreatePod resolves or creates a sandbox pod for the session.
-// Lookup order: cache → label-based K8s API discovery → idempotent create.
+// Lookup order: cache → label-based K8s API discovery → claim unassigned → on-demand create.
 func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (podIP string, err error) {
 	if validationErr := ValidateSessionID(sessionID); validationErr != nil {
 		return "", validationErr
@@ -137,28 +134,30 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 		return ip, nil
 	}
 
-	if m.pool != nil {
-		claimedIP, claimedPodName, claimErr := m.pool.ClaimPod(ctx, sessionID)
-		if claimErr == nil {
-			// Claim only guarantees IP + /assign; wait for PodReady before caching.
-			readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
-			if readyErr != nil {
-				// On caller abort, leave the pod for sibling replicas still in
-				// discover/waitForReady. On ready-timeout failure the agent already
-				// has the token, so delete — it cannot return to the warm pool.
-				if shouldCleanupAfterWaitFailure(readyErr) {
-					m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
-				}
-				return "", fmt.Errorf("warm pool pod not ready after claim: %w", readyErr)
+	claimedIP, claimedPodName, claimErr := m.pool.ClaimPod(ctx, sessionID)
+	if claimErr == nil {
+		// Claim only guarantees IP + /assign; wait for PodReady before caching.
+		readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
+		if readyErr != nil {
+			// On caller abort, leave the pod for sibling replicas still in
+			// discover/waitForReady. On ready-timeout failure the agent already
+			// has the token, so delete — it cannot return to the unassigned set.
+			if shouldCleanupAfterWaitFailure(readyErr) {
+				m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
 			}
-			if readyIP == "" {
-				readyIP = claimedIP
-			}
-			m.cache.Set(sessionID, readyIP, claimedPodName)
-			return readyIP, nil
+			return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
 		}
-		m.logger.Info("warm pool claim failed, falling back to on-demand creation", "session", sessionID, "error", claimErr)
+		if readyIP == "" {
+			readyIP = claimedIP
+		}
+		m.cache.Set(sessionID, readyIP, claimedPodName)
+		return readyIP, nil
 	}
+	m.logger.Debug("no unassigned pod claimed, creating on demand", "session", sessionID, "error", claimErr)
+
+	// Phase 5 follow-up: after a failed claim, rediscover before create. A sibling
+	// may have already claimed a UUID-named pool pod for this session; on-demand
+	// create uses cli-mcp-sandbox-<session-id> so AlreadyExists will not catch that.
 
 	ip, podName, err = m.createSandboxPod(ctx, sessionID)
 	if err != nil {
@@ -182,9 +181,8 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 // discoverPod lists pods by label selector and returns the oldest Ready pod's IP.
 // If no Ready pod exists but a non-terminal pod is found, it waits for readiness.
 func (m *SessionManager) discoverPod(ctx context.Context, sessionID string) (podIP, podName string, err error) {
-	selector := fmt.Sprintf("%s=%s,%s=%s", labelSessionID, sessionID, labelComponent, componentValue)
 	pods, err := m.clientset.CoreV1().Pods(m.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: selector,
+		LabelSelector: AssignedSelector(m.config.InstanceName, sessionID),
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("list pods: %w", err)
@@ -237,108 +235,11 @@ func isPodReady(pod *corev1.Pod) bool {
 	return false
 }
 
-// buildBasePodSpec constructs the shared sandbox pod spec used by both
-// on-demand creation and warm pool pre-creation. It includes the pod name,
-// component label, created-at and last-activity annotations, security context,
-// readiness probe, volumes, and base env vars. Callers add session-specific
-// fields (session-id label, SANDBOX_AUTH_TOKEN env var) as needed.
-func buildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
-	now := time.Now().UTC().Format(time.RFC3339)
-	runAsNonRoot := true
-	allowPrivEsc := false
-
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: config.Namespace,
-			Labels: map[string]string{
-				labelComponent: componentValue,
-			},
-			Annotations: map[string]string{
-				annotationCreatedAt:    now,
-				annotationLastActivity: now,
-			},
-		},
-		Spec: corev1.PodSpec{
-			ServiceAccountName: config.ServiceAccountName,
-			SecurityContext: &corev1.PodSecurityContext{
-				RunAsNonRoot: &runAsNonRoot,
-			},
-			Containers: []corev1.Container{
-				{
-					Name:  "sandbox",
-					Image: config.Image,
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(config.CPURequest),
-							corev1.ResourceMemory: resource.MustParse(config.MemoryRequest),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse(config.CPULimit),
-							corev1.ResourceMemory: resource.MustParse(config.MemoryLimit),
-						},
-					},
-					// Exec probe hits /health on loopback so kubelet does not need NetworkPolicy
-					// ingress (HTTPGet from the node IP is blocked when only app=cli-mcp-server
-					// may reach :8090). /health reflects bash session liveness (IsAlive), not
-					// merely TCP accept. curl-minimal is part of the sandbox image contract.
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							Exec: &corev1.ExecAction{
-								Command: []string{
-									"curl",
-									"-fsS",
-									"--max-time",
-									"1",
-									fmt.Sprintf("http://127.0.0.1:%d/health", config.AgentPort),
-								},
-							},
-						},
-						InitialDelaySeconds: 2,
-						TimeoutSeconds:      2, // > curl --max-time so shell/startup does not consume the whole budget
-						PeriodSeconds:       10,
-					},
-					SecurityContext: &corev1.SecurityContext{
-						AllowPrivilegeEscalation: &allowPrivEsc,
-						Capabilities: &corev1.Capabilities{
-							Drop: []corev1.Capability{"ALL"},
-						},
-					},
-					Env: []corev1.EnvVar{
-						{Name: "KUBECONFIG", Value: "/config/kubeconfig"},
-						{Name: "HOME", Value: "/workspace"},
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "kubeconfig", MountPath: "/config", ReadOnly: true},
-						{Name: "workspace", MountPath: "/workspace"},
-					},
-				},
-			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "kubeconfig",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: config.KubeconfigSecret,
-						},
-					},
-				},
-				{
-					Name: "workspace",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-			},
-		},
-	}
-}
-
 // buildPodSpec constructs a session-specific pod by applying session fields
 // (session-id label, SANDBOX_AUTH_TOKEN env) on top of the shared base pod spec.
 func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
-	pod := buildBasePodSpec(podNamePrefix+sessionID, m.config)
-	pod.Labels[labelSessionID] = sessionID
+	pod := BuildBasePodSpec(podNamePrefix+sessionID, m.config)
+	pod.Labels[LabelSessionID] = sessionID
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
 		Name: "SANDBOX_AUTH_TOKEN",
 		ValueFrom: &corev1.EnvVarSource{
@@ -355,14 +256,15 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 
 // buildAuthSecret constructs the per-session auth Secret containing the
 // HMAC-derived token. Shared by SessionManager and WarmPool.
-func buildAuthSecret(namespace, sessionID, token string) *corev1.Secret {
+func buildAuthSecret(namespace, instance, sessionID, token string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretNamePrefix + sessionID,
 			Namespace: namespace,
 			Labels: map[string]string{
-				labelSessionID: sessionID,
-				labelComponent: componentValue,
+				LabelSessionID: sessionID,
+				LabelComponent: ComponentSandbox,
+				LabelInstance:  instance,
 			},
 		},
 		StringData: map[string]string{
@@ -420,7 +322,7 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string) (podIP, podName string, err error) {
 	token := computeToken(m.config.HMACKey, sessionID)
 
-	secret := buildAuthSecret(m.config.Namespace, sessionID, token)
+	secret := buildAuthSecret(m.config.Namespace, m.config.InstanceName, sessionID, token)
 	_, err = m.clientset.CoreV1().Secrets(m.config.Namespace).Create(ctx, secret, metav1.CreateOptions{})
 	if err != nil && !k8serrors.IsAlreadyExists(err) {
 		return "", "", fmt.Errorf("create auth secret: %w", err)
@@ -440,7 +342,7 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 	if waitErr != nil {
 		// Delete only when the pod failed our ready wait. If the request context
 		// was canceled or timed out, another replica may still be waiting on the
-		// same pod via discoverPod — leave resources for idle GC instead.
+		// same pod via discoverPod — leave resources for a sibling waiter.
 		if shouldCleanupAfterWaitFailure(waitErr) {
 			m.bestEffortCleanupFailedPod(created.Name, sessionID)
 		}
@@ -519,7 +421,7 @@ func (m *SessionManager) updateLastActivity(ctx context.Context, podName string)
 	defer cancel()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, annotationLastActivity, now)
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, AnnotationLastActivity, now)
 
 	_, err := m.clientset.CoreV1().Pods(m.config.Namespace).Patch(
 		ctx, podName, types.MergePatchType, []byte(patch), metav1.PatchOptions{},
@@ -533,9 +435,8 @@ func (m *SessionManager) updateLastActivity(ctx context.Context, podName string)
 func (m *SessionManager) CleanupSession(ctx context.Context, sessionID string) error {
 	m.cache.Delete(sessionID)
 
-	selector := fmt.Sprintf("%s=%s,%s=%s", labelSessionID, sessionID, labelComponent, componentValue)
 	pods, err := m.clientset.CoreV1().Pods(m.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: selector,
+		LabelSelector: AssignedSelector(m.config.InstanceName, sessionID),
 	})
 	if err != nil {
 		return fmt.Errorf("list pods for cleanup: %w", err)
@@ -554,51 +455,4 @@ func (m *SessionManager) CleanupSession(ctx context.Context, sessionID string) e
 	}
 
 	return errors.Join(errs...)
-}
-
-// CleanupStale iterates all sandbox pods and cleans up sessions idle longer
-// than IdleTimeout. This method is designed to be called externally on a ticker.
-func (m *SessionManager) CleanupStale(ctx context.Context) (int, error) {
-	selector := fmt.Sprintf("%s=%s", labelComponent, componentValue)
-	pods, err := m.clientset.CoreV1().Pods(m.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: selector,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("list sandbox pods: %w", err)
-	}
-
-	now := time.Now()
-	cleaned := 0
-
-	for i := range pods.Items {
-		p := &pods.Items[i]
-		sessionID := p.Labels[labelSessionID]
-		if sessionID == "" {
-			continue
-		}
-
-		lastActive := p.Annotations[annotationLastActivity]
-		if lastActive == "" {
-			lastActive = p.Annotations[annotationCreatedAt]
-		}
-		if lastActive == "" {
-			continue
-		}
-
-		t, parseErr := time.Parse(time.RFC3339, lastActive)
-		if parseErr != nil {
-			m.logger.Warn("unparseable timestamp annotation", "pod", p.Name, "value", lastActive)
-			continue
-		}
-
-		if now.Sub(t) > m.config.IdleTimeout {
-			if cleanErr := m.CleanupSession(ctx, sessionID); cleanErr != nil {
-				m.logger.Warn("failed to cleanup stale session", "session", sessionID, "error", cleanErr)
-				continue
-			}
-			cleaned++
-		}
-	}
-
-	return cleaned, nil
 }
