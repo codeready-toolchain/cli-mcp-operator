@@ -87,6 +87,15 @@ func TestSelectorsIncludeInstance(t *testing.T) {
 		"cli-mcp.redhat.com/instance=oc,cli-mcp.redhat.com/component=sandbox,!cli-mcp.redhat.com/session-id",
 		UnassignedSelector("oc"),
 	)
+	assert.Equal(t,
+		"cli-mcp.redhat.com/instance=oc,cli-mcp.redhat.com/component=sandbox,cli-mcp.redhat.com/session-id",
+		AssignedAnySelector("oc"),
+	)
+	assert.Equal(t,
+		"cli-mcp.redhat.com/instance=oc,cli-mcp.redhat.com/component=server",
+		ServerSelector("oc"),
+	)
+	assert.Equal(t, "cli-mcp-sandbox-auth-sess", AuthSecretName("sess"))
 }
 
 func TestDefaultConfigHasNoIdentityDefaults(t *testing.T) {

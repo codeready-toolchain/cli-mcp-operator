@@ -77,7 +77,7 @@ func TestClaimPod(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "session-abc", claimed.Labels[LabelSessionID])
 
-		secret, err := pool.clientset.CoreV1().Secrets(testNamespace).Get(ctx, secretNamePrefix+"session-abc", metav1.GetOptions{})
+		secret, err := pool.clientset.CoreV1().Secrets(testNamespace).Get(ctx, AuthSecretName("session-abc"), metav1.GetOptions{})
 		require.NoError(t, err)
 		assert.Equal(t, "session-abc", secret.Labels[LabelSessionID])
 		assert.Equal(t, testInstance, secret.Labels[LabelInstance])
@@ -170,7 +170,7 @@ func TestClaimPod(t *testing.T) {
 
 		conflictingSecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      secretNamePrefix + "session-conflict",
+				Name:      AuthSecretName("session-conflict"),
 				Namespace: testNamespace,
 			},
 			StringData: map[string]string{"token": "stale-token"},
@@ -211,7 +211,7 @@ func TestClaimPod(t *testing.T) {
 		_, hasSession := rolledBack.Labels[LabelSessionID]
 		assert.False(t, hasSession, "session-id label should be removed on rollback")
 
-		_, secretErr := pool.clientset.CoreV1().Secrets(testNamespace).Get(ctx, secretNamePrefix+"session-assign-fail", metav1.GetOptions{})
+		_, secretErr := pool.clientset.CoreV1().Secrets(testNamespace).Get(ctx, AuthSecretName("session-assign-fail"), metav1.GetOptions{})
 		assert.Error(t, secretErr, "secret should be deleted on rollback")
 	})
 
@@ -292,7 +292,7 @@ func TestGetOrCreatePodAlwaysClaims(t *testing.T) {
 		})
 		require.NoError(t, listErr)
 		assert.NotEmpty(t, pods.Items, "pod should remain after request deadline for sibling waiters")
-		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-fallback", metav1.GetOptions{})
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), AuthSecretName("session-fallback"), metav1.GetOptions{})
 		require.NoError(t, secretErr, "auth secret should remain after request deadline")
 	})
 
@@ -331,7 +331,7 @@ func TestGetOrCreatePodAlwaysClaims(t *testing.T) {
 		claimed, podErr := client.CoreV1().Pods(testNamespace).Get(context.Background(), "warm-not-ready", metav1.GetOptions{})
 		require.NoError(t, podErr, "claimed pod should remain after request deadline")
 		assert.Equal(t, "session-claim-not-ready", claimed.Labels[LabelSessionID])
-		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), secretNamePrefix+"session-claim-not-ready", metav1.GetOptions{})
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(context.Background(), AuthSecretName("session-claim-not-ready"), metav1.GetOptions{})
 		require.NoError(t, secretErr, "auth secret should remain after request deadline")
 	})
 }

@@ -26,6 +26,10 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
+        # Present so make deploy / Kind can resolve the downward API when OLM
+        # has not injected the annotation. OLM overwrites this with
+        # OperatorGroup targetNamespaces.
+        olm.targetNamespaces: ""
       labels:
         control-plane: controller-manager
         app.kubernetes.io/name: cli-mcp-operator
@@ -67,13 +71,23 @@ spec:
         imagePullPolicy: IfNotPresent
         name: manager
         env:
-          # Operand images from OLM relatedImages (Q7). Not an operator-config WATCH_NAMESPACE.
+          # Operand images from OLM relatedImages. Not an operator-config WATCH_NAMESPACE.
           - name: RELATED_IMAGE_SERVER
             value: quay.io/codeready-toolchain/cli-mcp-server:latest
           - name: RELATED_IMAGE_SANDBOX
             value: quay.io/codeready-toolchain/cli-mcp-sandbox:latest
           - name: RELATED_IMAGE_KUBE_RBAC_PROXY
             value: quay.io/brancz/kube-rbac-proxy:v0.19.1
+          # OwnNamespace fallback for make deploy. OLM overrides WATCH_NAMESPACE
+          # from the olm.targetNamespaces annotation.
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: WATCH_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.annotations['olm.targetNamespaces']
         ports: []
         securityContext:
           allowPrivilegeEscalation: false

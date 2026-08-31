@@ -1,0 +1,40 @@
+# Namespaced manager verbs for pods and secrets (secret trust boundary).
+# Do not add these rules to ClusterRole manager-role.
+#
+# OLM creates CSV `permissions` as a Role in the operator namespace, then copies
+# that Role/RoleBinding into OperatorGroup targetNamespaces (SingleNamespace).
+# make deploy applies this Role in the operator namespace (OwnNamespace).
+# Leader election stays in the operator pod namespace (controller-runtime
+# default), where the CSV permissions Role is created first.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: cli-mcp-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: manager-namespaced-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

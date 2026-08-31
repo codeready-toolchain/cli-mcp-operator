@@ -1,6 +1,6 @@
 # cli-mcp-server - agent guide
 
-MCP control plane in Go that gives agents a sandboxed bash shell inside per-session Kubernetes pods. Two binaries: `cmd/server` (MCP server) and `cmd/agent` (sandbox data plane). Do not conflate them.
+MCP control plane in Go that gives agents a sandboxed bash shell inside per-session Kubernetes pods. Binaries: `cmd/operator` (manager), `cmd/server` (MCP server), and `cmd/agent` (sandbox data plane). Do not conflate them.
 
 Go 1.26+. Default branch: `master`. Architecture: `README.md`, `docs/architecture-overview.md`, `docs/design.md`.
 
@@ -8,7 +8,7 @@ Go 1.26+. Default branch: `master`. Architecture: `README.md`, `docs/architectur
 
 Never invent alternate package-manager commands if these work.
 
-- Build both: `make build` (`make build-server`, `make build-agent`)
+- Build all: `make build` (`make build-operator`, `make build-server`, `make build-agent`)
 - Test: `make test`
 - Lint: `make lint`
 - Format: `make fmt`

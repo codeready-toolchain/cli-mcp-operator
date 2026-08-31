@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -259,15 +260,46 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
+	})
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+	Context("CliMcpInstance", func() {
+		It("should create MCP children for a pool-0 instance", func() {
+			By("creating the investigation kubeconfig Secret")
+			cmd := exec.Command("kubectl", "create", "secret", "generic", "cli-mcp-oc-kubeconfig",
+				"-n", namespace,
+				"--from-literal=kubeconfig=unused")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating the TLS Secret")
+			cmd = exec.Command("kubectl", "create", "secret", "generic", "cli-mcp-oc-tls",
+				"-n", namespace,
+				"--from-literal=tls.crt=unused",
+				"--from-literal=tls.key=unused")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a CliMcpInstance")
+			cmd = exec.Command("kubectl", "apply", "-n", namespace, "-f", "config/samples/cli-mcp_v1alpha1_climcpinstance.yaml")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for HMAC Secret, Deployment, Service, sandbox SA, and NetworkPolicy")
+			Eventually(func(g Gomega) {
+				for _, args := range [][]string{
+					{"get", "secret", "cli-mcp-oc-hmac", "-n", namespace},
+					{"get", "deploy", "cli-mcp-oc", "-n", namespace},
+					{"get", "svc", "cli-mcp-oc", "-n", namespace},
+					{"get", "sa", "cli-mcp-oc-sandbox", "-n", namespace},
+					{"get", "networkpolicy", "cli-mcp-oc-sandbox", "-n", namespace},
+					{"get", "role", "cli-mcp-oc", "-n", namespace},
+				} {
+					c := exec.Command("kubectl", args...)
+					_, err := utils.Run(c)
+					g.Expect(err).NotTo(HaveOccurred(), strings.Join(args, " "))
+				}
+			}).Should(Succeed())
+		})
 	})
 })
 

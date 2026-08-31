@@ -17,19 +17,108 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// CliMcpInstanceSpec is empty in Phase 2. Typed fields land in Phase 4.
-type CliMcpInstanceSpec struct{}
+const (
+	// ConditionReady is the aggregate instance condition.
+	ConditionReady = "Ready"
+	// ConditionWarmPoolReady is the strict unassigned pool count.
+	ConditionWarmPoolReady = "WarmPoolReady"
 
-// CliMcpInstanceStatus is empty in Phase 2. Ready/pool status land in Phase 4–5.
-type CliMcpInstanceStatus struct{}
+	ReasonReady                 = "Ready"
+	ReasonReconciling           = "Reconciling"
+	ReasonSecretsNotFound       = "SecretsNotFound"
+	ReasonSecretKeysInvalid     = "SecretKeysInvalid"
+	ReasonDeploymentUnavailable = "DeploymentUnavailable"
+	ReasonChildrenNotReady      = "ChildrenNotReady"
+)
+
+// CliMcpInstanceSpec defines the desired state of one MCP sandbox class / instance.
+type CliMcpInstanceSpec struct {
+	// Replicas is the number of MCP server pods.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas,omitempty"`
+
+	// Sandbox is the sandbox class (image + config) for this instance.
+	// +kubebuilder:default={}
+	Sandbox SandboxSpec `json:"sandbox,omitempty"`
+
+	// ServerContainer optionally sets resources / imagePullPolicy on the MCP
+	// container. The MCP image is always RELATED_IMAGE_SERVER, not a spec field.
+	// +optional
+	ServerContainer *ServerContainerSpec `json:"serverContainer,omitempty"`
+}
+
+// SandboxSpec is the user-mergeable sandbox class. Operator-owned pod fields
+// (SA, automount, labels, probes, kubeconfig mount, security context) are not
+// spec fields.
+type SandboxSpec struct {
+	// Image is the sandbox class image. Empty uses RELATED_IMAGE_SANDBOX.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// IdleTimeout is how long an assigned session may be idle before the
+	// operator GCs it. Consumed by the operator; not passed as an MCP flag.
+	// +kubebuilder:default="30m"
+	IdleTimeout metav1.Duration `json:"idleTimeout,omitempty"`
+
+	// WarmPoolSize is the desired unassigned pool. The operator does not
+	// replenish the pool until Phase 5. Default 0 (on-demand create only).
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	WarmPoolSize int32 `json:"warmPoolSize,omitempty"`
+
+	// Resources for sandbox pods. Empty/omitted uses DefaultConfig
+	// 100m/500m/128Mi/512Mi, not BestEffort.
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Env overlay for sandbox pods, including valueFrom. Operator-owned
+	// names (KUBECONFIG, HOME, SANDBOX_AUTH_TOKEN) are ignored by the builder.
+	// Extra Secrets referenced here are not Ready gates.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// ImagePullPolicy for sandbox pods.
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+}
+
+// ServerContainerSpec is optional MCP-container-only overlay.
+type ServerContainerSpec struct {
+	// +optional
+	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+	// +optional
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
+}
+
+// CliMcpInstanceStatus is observed instance state.
+type CliMcpInstanceStatus struct {
+	// WarmPoolReady is the number of unassigned Ready pool pods.
+	// Always published; pool replenishment is Phase 5.
+	WarmPoolReady int32 `json:"warmPoolReady"`
+
+	// WarmPoolDesired is spec.sandbox.warmPoolSize. Always published.
+	WarmPoolDesired int32 `json:"warmPoolDesired"`
+
+	// ResolvedSandboxImage is spec.sandbox.image or RELATED_IMAGE_SANDBOX.
+	// +optional
+	ResolvedSandboxImage string `json:"resolvedSandboxImage,omitempty"`
+
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 44",message="metadata.name must be at most 44 characters so cli-mcp-<name>-kubeconfig is a valid DNS-1123 label"
 
-// CliMcpInstance is the Schema for the climcpinstances API.
+// CliMcpInstance is one MCP class/instance (one sandbox image + config, one MCP Deployment).
 type CliMcpInstance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

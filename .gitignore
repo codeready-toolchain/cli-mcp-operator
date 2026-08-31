@@ -52,6 +52,13 @@ Dockerfile.cross
 /config/.deploy/
 /config/.bundle/
 
+# File-based catalog render output (make catalog-build)
+/catalog/
+
+# Python
+__pycache__/
+*.py[cod]
+
 # Temporary files
 /tmp/
 /temp/

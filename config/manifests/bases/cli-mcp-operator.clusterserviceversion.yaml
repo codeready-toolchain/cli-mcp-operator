@@ -13,7 +13,8 @@ spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: CliMcpInstance is the Schema for the climcpinstances API.
+    - description: CliMcpInstance is one MCP class/instance (one sandbox image + config,
+        one MCP Deployment).
       displayName: Cli Mcp Instance
       kind: CliMcpInstance
       name: climcpinstances.cli-mcp.redhat.com
