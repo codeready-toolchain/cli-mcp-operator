@@ -232,8 +232,8 @@ func (r *CliMcpInstanceReconciler) applyDeployment(ctx context.Context, inst *cl
 	desired.Spec.Replicas = &replicas
 	desired.Spec.Selector = &metav1.LabelSelector{MatchLabels: serverLabels(inst.Name)}
 	desired.Spec.Template = r.mcpPodTemplate(inst, args, hmac)
-	if err := controllerutil.SetControllerReference(inst, desired, r.Scheme); err != nil {
-		return fmt.Errorf("Deployment ownerRef: %w", err)
+	if err = controllerutil.SetControllerReference(inst, desired, r.Scheme); err != nil {
+		return fmt.Errorf("deployment ownerRef: %w", err)
 	}
 	NormalizeDeployment(desired)
 

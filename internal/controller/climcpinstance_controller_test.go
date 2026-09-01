@@ -114,8 +114,8 @@ var _ = Describe("CliMcpInstance Controller", func() {
 
 		Eventually(func(g Gomega) {
 			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-			g.Expect(err).NotTo(HaveOccurred())
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
 			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
 			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
@@ -298,8 +298,8 @@ var _ = Describe("CliMcpInstance Controller", func() {
 
 		Eventually(func(g Gomega) {
 			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-			g.Expect(err).NotTo(HaveOccurred())
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
 			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
 			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
@@ -335,8 +335,8 @@ var _ = Describe("CliMcpInstance Controller", func() {
 
 		Eventually(func(g Gomega) {
 			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-			g.Expect(err).NotTo(HaveOccurred())
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
 			g.Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
 			cond := meta.FindStatusCondition(got.Status.Conditions, climcpv1alpha1.ConditionReady)
