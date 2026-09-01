@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
@@ -222,17 +223,32 @@ func (r *CliMcpInstanceReconciler) applyDeployment(ctx context.Context, inst *cl
 		return err
 	}
 
-	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+	desired := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
 		Name:      childName(inst.Name),
 		Namespace: inst.Namespace,
+		Labels:    instanceLabels(inst.Name),
 	}}
 	replicas := replicasOrDefault(inst.Spec.Replicas)
+	desired.Spec.Replicas = &replicas
+	desired.Spec.Selector = &metav1.LabelSelector{MatchLabels: serverLabels(inst.Name)}
+	desired.Spec.Template = r.mcpPodTemplate(inst, args, hmac)
+	if err := controllerutil.SetControllerReference(inst, desired, r.Scheme); err != nil {
+		return fmt.Errorf("Deployment ownerRef: %w", err)
+	}
+	NormalizeDeployment(desired)
+
+	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+		Name:      desired.Name,
+		Namespace: desired.Namespace,
+	}}
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		deploy.Labels = instanceLabels(inst.Name)
-		deploy.Spec.Replicas = &replicas
-		deploy.Spec.Selector = &metav1.LabelSelector{MatchLabels: serverLabels(inst.Name)}
-		deploy.Spec.Template = r.mcpPodTemplate(inst, args, hmac)
-		return controllerutil.SetControllerReference(inst, deploy, r.Scheme)
+		if deploy.Labels == nil {
+			deploy.Labels = map[string]string{}
+		}
+		maps.Copy(deploy.Labels, desired.Labels)
+		deploy.Spec = desired.Spec
+		deploy.OwnerReferences = desired.OwnerReferences
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("apply Deployment: %w", err)
@@ -345,7 +361,7 @@ func loopbackLiveProbe(initialDelay int32) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			Exec: &corev1.ExecAction{
-				Command: []string{"/bin/bash", "-c", "echo GET /live >/dev/tcp/127.0.0.1/8080"},
+				Command: []string{"/bin/sh", "-c", "echo GET /live >/dev/tcp/127.0.0.1/8080"},
 			},
 		},
 		InitialDelaySeconds: initialDelay,

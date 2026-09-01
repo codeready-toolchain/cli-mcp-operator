@@ -157,24 +157,33 @@ func TestMapSecretIgnoresSessionAuth(t *testing.T) {
 	assert.Equal(t, "oc", reqs[0].Name)
 }
 
-func TestManagerRoleHasNoPodsOrSecrets(t *testing.T) {
+func TestManagerRoleIsCRDOnly(t *testing.T) {
 	t.Parallel()
 	role := loadRoleYAML(t, filepath.Join("..", "..", "config", "rbac", "role.yaml"))
+	forbidden := []string{
+		"pods", "secrets", "services", "serviceaccounts",
+		"deployments", "roles", "rolebindings", "networkpolicies",
+	}
 	for _, rule := range role.Rules {
-		assert.NotContains(t, rule.Resources, "pods")
-		assert.NotContains(t, rule.Resources, "secrets")
+		for _, res := range forbidden {
+			assert.NotContains(t, rule.Resources, res)
+		}
 	}
 }
 
-func TestNamespacedRoleHasPodsAndSecrets(t *testing.T) {
+func TestNamespacedRoleHasChildResources(t *testing.T) {
 	t.Parallel()
 	role := loadRoleYAML(t, filepath.Join("..", "..", "config", "rbac", "namespaced_role.yaml"))
 	var resources []string
 	for _, rule := range role.Rules {
 		resources = append(resources, rule.Resources...)
 	}
-	assert.Contains(t, resources, "pods")
-	assert.Contains(t, resources, "secrets")
+	for _, want := range []string{
+		"pods", "secrets", "services", "serviceaccounts",
+		"deployments", "roles", "rolebindings", "networkpolicies",
+	} {
+		assert.Contains(t, resources, want)
+	}
 }
 
 func TestMCPRoleSecretVerbs(t *testing.T) {

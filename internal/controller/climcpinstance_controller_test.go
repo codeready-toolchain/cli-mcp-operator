@@ -125,6 +125,16 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			g.Expect(inst.Status.WarmPoolReady).To(Equal(int32(0)))
 			g.Expect(inst.Status.ResolvedSandboxImage).To(Equal(testImages().Sandbox))
 		}).Should(Succeed())
+
+		deploy = &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		gen := deploy.Generation
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		Expect(deploy.Generation).To(Equal(gen))
 	})
 
 	It("sets SecretsNotFound when kubeconfig is missing", func() {

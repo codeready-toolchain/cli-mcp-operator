@@ -1,4 +1,4 @@
-# Namespaced manager verbs for pods and secrets (secret trust boundary).
+# Namespaced manager verbs for instance children and the secret trust boundary.
 # Do not add these rules to ClusterRole manager-role.
 #
 # OLM creates CSV `permissions` as a Role in the operator namespace, then copies
@@ -18,6 +18,9 @@ rules:
   - ""
   resources:
   - pods
+  - secrets
+  - services
+  - serviceaccounts
   verbs:
   - create
   - delete
@@ -27,9 +30,34 @@ rules:
   - update
   - watch
 - apiGroups:
-  - ""
+  - apps
   resources:
-  - secrets
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
   verbs:
   - create
   - delete

@@ -48,17 +48,12 @@ type CliMcpInstanceReconciler struct {
 	OnOpenShift bool
 }
 
-// Namespaced pods/secrets verbs are a Role in the OperatorGroup target
-// namespace (config/rbac/namespaced_role.yaml), not this ClusterRole.
+// Namespaced instance-child and pods/secrets verbs are a Role in the
+// OperatorGroup target namespace (config/rbac/namespaced_role.yaml), not this
+// ClusterRole.
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)

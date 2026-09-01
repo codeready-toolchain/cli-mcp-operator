@@ -50,31 +50,6 @@ spec:
       clusterPermissions:
       - rules:
         - apiGroups:
-          - ""
-          resources:
-          - serviceaccounts
-          - services
-          verbs:
-          - create
-          - delete
-          - get
-          - list
-          - patch
-          - update
-          - watch
-        - apiGroups:
-          - apps
-          resources:
-          - deployments
-          verbs:
-          - create
-          - delete
-          - get
-          - list
-          - patch
-          - update
-          - watch
-        - apiGroups:
           - cli-mcp.redhat.com
           resources:
           - climcpinstances
@@ -100,31 +75,6 @@ spec:
           - get
           - patch
           - update
-        - apiGroups:
-          - networking.k8s.io
-          resources:
-          - networkpolicies
-          verbs:
-          - create
-          - delete
-          - get
-          - list
-          - patch
-          - update
-          - watch
-        - apiGroups:
-          - rbac.authorization.k8s.io
-          resources:
-          - rolebindings
-          - roles
-          verbs:
-          - create
-          - delete
-          - get
-          - list
-          - patch
-          - update
-          - watch
         - apiGroups:
           - authentication.k8s.io
           resources:
@@ -252,6 +202,9 @@ spec:
           - ""
           resources:
           - pods
+          - secrets
+          - services
+          - serviceaccounts
           verbs:
           - create
           - delete
@@ -261,9 +214,34 @@ spec:
           - update
           - watch
         - apiGroups:
-          - ""
+          - apps
           resources:
-          - secrets
+          - deployments
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - roles
+          - rolebindings
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - networking.k8s.io
+          resources:
+          - networkpolicies
           verbs:
           - create
           - delete
