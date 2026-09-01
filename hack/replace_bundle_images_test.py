@@ -61,6 +61,18 @@ class ReplaceBundleImagesTest(unittest.TestCase):
             )
         self.assertIn("REPLACE_CREATED_AT", str(ctx.exception))
 
+    def test_aborts_if_unknown_replace_placeholder_remains(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            mod.apply_replacements(
+                SAMPLE + "REPLACE_OTHER\n",
+                "op",
+                "srv",
+                "sbx",
+                "proxy",
+                "2026-08-26T12:00:00Z",
+            )
+        self.assertIn("REPLACE_", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

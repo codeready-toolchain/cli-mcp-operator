@@ -19,6 +19,13 @@ CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
 BUNDLE_CSV = bundle/manifests/cli-mcp-operator.clusterserviceversion.yaml
 
+# Catalog CD image repos (SHA-tagged by generate-cd-release-manifests).
+OPERATOR_REPO ?= $(IMAGE_TAG_BASE)
+SERVER_REPO ?= quay.io/codeready-toolchain/cli-mcp-server
+SANDBOX_REPO ?= quay.io/codeready-toolchain/cli-mcp-sandbox
+GIT_SHORT_SHA ?= $(shell git rev-parse --short HEAD)
+CREATED_AT ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+
 USE_IMAGE_DIGESTS ?= false
 ifeq ($(USE_IMAGE_DIGESTS), true)
 	BUNDLE_GEN_FLAGS += --use-image-digests
@@ -81,8 +88,12 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: test-hack
+test-hack: ## Run Python unit tests for bundle CSV stamp/replace scripts.
+	python3 -m unittest discover -s hack -p '*_test.py' -v
+
 .PHONY: test
-test: manifests generate setup-envtest ## Run unit + envtest (exclude test/e2e). Covers pkg/ and internal/.
+test: manifests generate setup-envtest test-hack ## Run unit + envtest (exclude test/e2e). Covers pkg/, internal/, and hack/.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
@@ -340,6 +351,15 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests with REPLA
 	@rm -rf config/.bundle
 	python3 hack/stamp-bundle-placeholders.py
 	$(OPERATOR_SDK) bundle validate ./bundle
+
+.PHONY: generate-cd-release-manifests
+generate-cd-release-manifests: bundle ## Stamp SHA-tagged relatedImages into the bundle CSV for catalog CD.
+	python3 hack/replace-bundle-images.py \
+		$(OPERATOR_REPO):$(GIT_SHORT_SHA) \
+		$(SERVER_REPO):$(GIT_SHORT_SHA) \
+		$(SANDBOX_REPO):$(GIT_SHORT_SHA) \
+		$(KUBE_RBAC_PROXY_IMG) \
+		$(CREATED_AT)
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.

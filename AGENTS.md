@@ -9,7 +9,7 @@ Go 1.26+. Default branch: `master`. Architecture: `README.md`, `docs/architectur
 Never invent alternate package-manager commands if these work.
 
 - Build all: `make build` (`make build-operator`, `make build-server`, `make build-agent`)
-- Test: `make test`
+- Test: `make test` (Go unit/envtest + `hack/` bundle-script tests)
 - Lint: `make lint`
 - Format: `make fmt`
 - Vet: `make vet`
