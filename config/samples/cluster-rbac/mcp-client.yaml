@@ -1,0 +1,52 @@
+# Cluster-scoped RBAC the admin applies. Not created by the operator.
+# Substitute the instance namespace (here: default) and CR name (here: oc).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cli-mcp-client
+  namespace: default
+---
+# MCP SA needs auth-delegator so kube-rbac-proxy can TokenReview / SubjectAccessReview.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cli-mcp-oc-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: cli-mcp-oc
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cli-mcp-client
+rules:
+- nonResourceURLs:
+  - /mcp
+  - /metrics
+  - /live
+  - /health
+  - /sessions
+  - /sessions/*
+  verbs:
+  - get
+  - create
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cli-mcp-client
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cli-mcp-client
+subjects:
+- kind: ServiceAccount
+  name: cli-mcp-client
+  namespace: default

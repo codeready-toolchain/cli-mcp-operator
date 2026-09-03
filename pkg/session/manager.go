@@ -24,8 +24,6 @@ import (
 
 const (
 	podNamePrefix = "cli-mcp-sandbox-"
-	//nolint:gosec // G101: K8s resource names, not credentials
-	secretNamePrefix = "cli-mcp-sandbox-auth-"
 
 	readyPollPeriod = 2 * time.Second
 	readyTimeout    = 60 * time.Second
@@ -245,7 +243,7 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: secretNamePrefix + sessionID,
+					Name: AuthSecretName(sessionID),
 				},
 				Key: "token",
 			},
@@ -259,7 +257,7 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 func buildAuthSecret(namespace, instance, sessionID, token string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretNamePrefix + sessionID,
+			Name:      AuthSecretName(sessionID),
 			Namespace: namespace,
 			Labels: map[string]string{
 				LabelSessionID: sessionID,
@@ -378,7 +376,7 @@ func bestEffortDeletePod(ctx context.Context, clientset kubernetes.Interface, na
 // bestEffortDeleteSecret deletes the per-session auth Secret, logging a
 // warning on failure. Shared by SessionManager and WarmPool.
 func bestEffortDeleteSecret(ctx context.Context, clientset kubernetes.Interface, namespace, sessionID string, logger *slog.Logger) {
-	secretName := secretNamePrefix + sessionID
+	secretName := AuthSecretName(sessionID)
 	err := clientset.CoreV1().Secrets(namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
 	if err != nil && !k8serrors.IsNotFound(err) {
 		logger.Warn("failed to delete auth secret", "secret", secretName, "error", err)
@@ -449,7 +447,7 @@ func (m *SessionManager) CleanupSession(ctx context.Context, sessionID string) e
 		}
 	}
 
-	secretName := secretNamePrefix + sessionID
+	secretName := AuthSecretName(sessionID)
 	if delErr := m.clientset.CoreV1().Secrets(m.config.Namespace).Delete(ctx, secretName, metav1.DeleteOptions{}); delErr != nil && !k8serrors.IsNotFound(delErr) {
 		errs = append(errs, fmt.Errorf("delete secret %s: %w", secretName, delErr))
 	}

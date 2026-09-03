@@ -5,5 +5,16 @@ metadata:
     app.kubernetes.io/name: cli-mcp-operator
     app.kubernetes.io/managed-by: kustomize
   name: oc
-# Typed spec fields land in Phase 4. Stub CR only.
-spec: {}
+spec:
+  replicas: 2
+  sandbox:
+    # image omitted → RELATED_IMAGE_SANDBOX
+    idleTimeout: 30m
+    warmPoolSize: 0
+# Admin must also apply:
+# - Secret cli-mcp-oc-kubeconfig (key kubeconfig)
+# - Secret cli-mcp-oc-tls (tls.crt/tls.key) on generic Kubernetes; OpenShift serving-cert fills this
+# - cluster RBAC in cluster-rbac/ (not created by the operator)
+# If the namespace is default-deny ingress, allow clients → Service cli-mcp-oc:8443
+# (the operator does not create an MCP ingress NetworkPolicy; kube-rbac-proxy is the front door).
+# OpenShift: grant an SCC/PSA that allows the sandbox non-root + drop ALL caps.

@@ -8,9 +8,13 @@ const (
 	LabelInstance  = "cli-mcp.redhat.com/instance"
 
 	ComponentSandbox = "sandbox"
+	ComponentServer  = "server"
 
 	AnnotationCreatedAt    = "cli-mcp.redhat.com/created-at"
 	AnnotationLastActivity = "cli-mcp.redhat.com/last-activity"
+
+	//nolint:gosec // G101: K8s resource name prefix, not a credential.
+	authSecretNamePrefix = "cli-mcp-sandbox-auth-"
 )
 
 // reservedSandboxEnv names are owned by the sandbox builder. Overlay env
@@ -60,6 +64,23 @@ func SandboxSelector(instance string) string {
 // AssignedSelector matches assigned sandbox pods for one instance and session.
 func AssignedSelector(instance, sessionID string) string {
 	return SandboxSelector(instance) + "," + LabelSessionID + "=" + sessionID
+}
+
+// AssignedAnySelector matches assigned sandbox pods/secrets for one instance
+// (session-id label exists).
+func AssignedAnySelector(instance string) string {
+	return SandboxSelector(instance) + "," + LabelSessionID
+}
+
+// ServerSelector matches MCP server pods for one instance.
+func ServerSelector(instance string) string {
+	return LabelInstance + "=" + instance + "," + LabelComponent + "=" + ComponentServer
+}
+
+// AuthSecretName is the per-session HMAC token Secret created by the MCP
+// process. Idle GC and the finalizer must use the same name.
+func AuthSecretName(sessionID string) string {
+	return authSecretNamePrefix + sessionID
 }
 
 // UnassignedSelector matches sandbox pods for one instance that have no session-id.

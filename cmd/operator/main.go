@@ -30,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -177,26 +178,35 @@ func main() {
 		})
 	}
 
-	// Phase 4 (SANDBOX-1983): scope Cache to OperatorGroup targetNamespaces (Q4).
-	// Do not copy claw's WATCH_NAMESPACE operator-config lookup.
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+	onOpenShift, err := detectOpenShift(restConfig)
+	if err != nil {
+		setupLog.Error(err, "detecting OpenShift; assuming generic Kubernetes")
+		onOpenShift = false
+	}
+	if onOpenShift {
+		setupLog.Info("OpenShift APIs detected; Service serving-cert annotation will be set")
+	}
+
+	cacheOpts := cache.Options{}
+	if nss := watchNamespaces(); len(nss) > 0 {
+		cacheOpts.DefaultNamespaces = make(map[string]cache.Config, len(nss))
+		for _, ns := range nss {
+			cacheOpts.DefaultNamespaces[ns] = cache.Config{}
+		}
+		setupLog.Info("watching namespaces", "namespaces", nss)
+	} else {
+		setupLog.Info("WATCH_NAMESPACE unset; watching all namespaces")
+	}
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "158fa8bf.redhat.com",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		Cache:                  cacheOpts,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -204,8 +214,10 @@ func main() {
 	}
 
 	if err := (&controller.CliMcpInstanceReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Images:      controller.ImagesFromEnv(),
+		OnOpenShift: onOpenShift,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CliMcpInstance")
 		os.Exit(1)

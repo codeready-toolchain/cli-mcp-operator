@@ -87,3 +87,23 @@ jobs:
         # Match sibling MCP repos; bump deliberately when lint breaks.
         version: latest
         args: --config=./.golangci.yml --verbose
+
+  bundle:
+    name: Bundle matches config
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+
+    - name: Generate bundle
+      run: make bundle
+
+    - name: Fail if bundle/ or generated CRD/RBAC drifted
+      run: git diff --exit-code bundle/ config/crd/bases config/rbac/role.yaml

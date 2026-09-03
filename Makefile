@@ -7,18 +7,24 @@ KUBE_RBAC_PROXY_IMG ?= quay.io/brancz/kube-rbac-proxy:v0.19.1
 # VERSION defines the project version for the bundle.
 VERSION ?= 0.0.1
 
-ifneq ($(origin CHANNELS), undefined)
+CHANNELS ?= alpha
+DEFAULT_CHANNEL ?= alpha
 BUNDLE_CHANNELS := --channels=$(CHANNELS)
-endif
-ifneq ($(origin DEFAULT_CHANNEL), undefined)
 BUNDLE_DEFAULT_CHANNEL := --default-channel=$(DEFAULT_CHANNEL)
-endif
 BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 
 IMAGE_TAG_BASE ?= quay.io/codeready-toolchain/cli-mcp-operator
 BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:v$(VERSION)
+CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:v$(VERSION)
 BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
 BUNDLE_CSV = bundle/manifests/cli-mcp-operator.clusterserviceversion.yaml
+
+# Catalog CD image repos (SHA-tagged by generate-cd-release-manifests).
+OPERATOR_REPO ?= $(IMAGE_TAG_BASE)
+SERVER_REPO ?= quay.io/codeready-toolchain/cli-mcp-server
+SANDBOX_REPO ?= quay.io/codeready-toolchain/cli-mcp-sandbox
+GIT_SHORT_SHA ?= $(shell git rev-parse --short HEAD)
+CREATED_AT ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 USE_IMAGE_DIGESTS ?= false
 ifeq ($(USE_IMAGE_DIGESTS), true)
@@ -82,8 +88,12 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: test-hack
+test-hack: ## Run Python unit tests for bundle CSV stamp/replace scripts.
+	python3 -m unittest discover -s hack -p '*_test.py' -v
+
 .PHONY: test
-test: manifests generate setup-envtest ## Run unit + envtest (exclude test/e2e). Covers pkg/ and internal/.
+test: manifests generate setup-envtest test-hack ## Run unit + envtest (exclude test/e2e). Covers pkg/, internal/, and hack/.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
 		go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
@@ -104,7 +114,7 @@ setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist
 	esac
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate ## Run Kind e2e (harness only in Phase 2).
+test-e2e: setup-test-e2e manifests generate ## Run Kind e2e (manager + instance children).
 	KIND_CLUSTER=$(KIND_CLUSTER) go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 15m
 
 .PHONY: cleanup-test-e2e
@@ -331,7 +341,7 @@ mv $(1) $(1)-$(3) ;\
 ln -sf $(1)-$(3) $(1)
 endef
 
-##@ Bundle / catalog (catalog publish is Phase 4 CD)
+##@ Bundle / catalog
 
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests with REPLACE_* relatedImages.
@@ -339,13 +349,17 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests with REPLA
 	$(call generate-bundle-overlay,$(IMG))
 	$(KUSTOMIZE) build config/.bundle | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	@rm -rf config/.bundle
-	sed -i 's|image: $(IMG)|image: REPLACE_OPERATOR_IMAGE|' $(BUNDLE_CSV)
-	sed -i 's|value: $(SERVER_IMG)|value: REPLACE_SERVER_IMAGE|' $(BUNDLE_CSV)
-	sed -i 's|value: $(SANDBOX_IMG)|value: REPLACE_SANDBOX_IMAGE|' $(BUNDLE_CSV)
-	sed -i 's|value: $(KUBE_RBAC_PROXY_IMG)|value: REPLACE_KUBE_RBAC_PROXY_IMAGE|' $(BUNDLE_CSV)
-	sed -i 's|^    createdAt: .*|    createdAt: "REPLACE_CREATED_AT"|' $(BUNDLE_CSV)
-	python3 -c 'import pathlib,re; p=pathlib.Path("$(BUNDLE_CSV)"); t=p.read_text(); t=re.sub(r"(?m)^  relatedImages:\n(?:  - image: .*\n    name: .*\n)+", "", t); b="  relatedImages:\n  - image: REPLACE_OPERATOR_IMAGE\n    name: manager\n  - image: REPLACE_SERVER_IMAGE\n    name: server\n  - image: REPLACE_SANDBOX_IMAGE\n    name: sandbox\n  - image: REPLACE_KUBE_RBAC_PROXY_IMAGE\n    name: kube-rbac-proxy\n"; t=re.sub(r"(?m)^  version: ", b+"  version: ", t, count=1); p.write_text(t)'
+	python3 hack/stamp-bundle-placeholders.py
 	$(OPERATOR_SDK) bundle validate ./bundle
+
+.PHONY: generate-cd-release-manifests
+generate-cd-release-manifests: bundle ## Stamp SHA-tagged relatedImages into the bundle CSV for catalog CD.
+	python3 hack/replace-bundle-images.py \
+		$(OPERATOR_REPO):$(GIT_SHORT_SHA) \
+		$(SERVER_REPO):$(GIT_SHORT_SHA) \
+		$(SANDBOX_REPO):$(GIT_SHORT_SHA) \
+		$(KUBE_RBAC_PROXY_IMG) \
+		$(CREATED_AT)
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
@@ -356,10 +370,13 @@ bundle-push: ## Push the bundle image.
 	$(MAKE) container-push IMG=$(BUNDLE_IMG)
 
 .PHONY: catalog-build
-# Phase 4 (SANDBOX-1983): switch to `opm render` before catalog CD; do not publish from master yet.
-catalog-build: opm ## Build a catalog image (not published from master in Phase 2).
-	$(OPM) index add --container-tool $(CONTAINER_TOOL) --mode semver --tag $(IMAGE_TAG_BASE)-catalog:v$(VERSION) --bundles $(BUNDLE_IMG)
+catalog-build: opm ## Build a file-based catalog image from BUNDLE_IMG (`opm render`).
+	rm -rf catalog
+	mkdir -p catalog
+	$(OPM) render $(BUNDLE_IMG) -o yaml > catalog/cli-mcp-operator.yaml
+	$(OPM) validate catalog
+	$(CONTAINER_TOOL) build -f catalog.Dockerfile -t $(CATALOG_IMG) .
 
 .PHONY: catalog-push
 catalog-push: ## Push a catalog image.
-	$(MAKE) container-push IMG=$(IMAGE_TAG_BASE)-catalog:v$(VERSION)
+	$(MAKE) container-push IMG=$(CATALOG_IMG)

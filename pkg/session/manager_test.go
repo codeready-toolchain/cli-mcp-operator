@@ -372,7 +372,7 @@ func TestGetOrCreatePod(t *testing.T) {
 		cachedIP, _, ok := mgr.cache.Get(sessionID)
 		assert.True(t, ok)
 		assert.Equal(t, "10.0.0.99", cachedIP)
-		_, secretErr := mgr.clientset.CoreV1().Secrets(testNamespace).Get(ctx, secretNamePrefix+sessionID, metav1.GetOptions{})
+		_, secretErr := mgr.clientset.CoreV1().Secrets(testNamespace).Get(ctx, AuthSecretName(sessionID), metav1.GetOptions{})
 		require.NoError(t, secretErr)
 	})
 
@@ -496,7 +496,7 @@ func TestBuildAuthSecret(t *testing.T) {
 	secret := buildAuthSecret(testNamespace, testInstance, "inv-sec", token)
 
 	// then
-	assert.Equal(t, secretNamePrefix+"inv-sec", secret.Name)
+	assert.Equal(t, AuthSecretName("inv-sec"), secret.Name)
 	assert.Equal(t, testNamespace, secret.Namespace)
 	assert.Equal(t, "inv-sec", secret.Labels[LabelSessionID])
 	assert.Equal(t, ComponentSandbox, secret.Labels[LabelComponent])
@@ -597,7 +597,7 @@ func TestCleanupSession(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, pods.Items, "pods should be deleted")
 
-	_, err = mgr.clientset.CoreV1().Secrets(testNamespace).Get(ctx, secretNamePrefix+"inv-clean", metav1.GetOptions{})
+	_, err = mgr.clientset.CoreV1().Secrets(testNamespace).Get(ctx, AuthSecretName("inv-clean"), metav1.GetOptions{})
 	assert.Error(t, err, "secret should be deleted")
 }
 
