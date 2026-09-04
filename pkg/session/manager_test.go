@@ -473,6 +473,64 @@ func TestWaitAndCacheClaim(t *testing.T) {
 		require.NoError(t, secretErr)
 	})
 
+	t.Run("excludes the claimed pod and does not wait for a pending sibling", func(t *testing.T) {
+		sessionID := "sess-wait-exclude"
+		claimedName := "claimed-pending"
+		claimed := readyPod(sessionID, "", time.Now())
+		claimed.Name = claimedName
+		claimed.Status.Phase = corev1.PodPending
+		claimed.Status.PodIP = ""
+		claimed.Status.Conditions = nil
+
+		sibling := readyPod(sessionID, "", time.Now().Add(-time.Minute))
+		sibling.Name = "cli-mcp-sandbox-older-uuid"
+		sibling.Status.Phase = corev1.PodPending
+		sibling.Status.PodIP = ""
+		sibling.Status.Conditions = nil
+
+		client := fake.NewSimpleClientset(claimed.DeepCopy(), sibling.DeepCopy())
+		client.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			get, ok := action.(k8stesting.GetAction)
+			if !ok {
+				return false, nil, nil
+			}
+			if get.GetName() != claimedName {
+				return true, nil, fmt.Errorf("must not waitForReady on %s", get.GetName())
+			}
+			return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, claimedName)
+		})
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		start := time.Now()
+		_, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, claimedName, "10.0.0.99")
+
+		require.Error(t, waitErr)
+		assert.Contains(t, waitErr.Error(), "claimed pod not ready")
+		assert.Less(t, time.Since(start), time.Second, "must not waitForReady on the claimed or sibling pod")
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		require.NoError(t, secretErr, "pending sibling must keep the auth Secret")
+	})
+
+	t.Run("does not delete the auth Secret when sibling list fails", func(t *testing.T) {
+		sessionID := "sess-wait-list-err"
+		client := fake.NewSimpleClientset()
+		client.PrependReactor("list", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, fmt.Errorf("list assigned pods failed")
+		})
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		_, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, "missing-claimed", "10.0.0.99")
+
+		require.Error(t, waitErr)
+		assert.Contains(t, waitErr.Error(), "list assigned pods")
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		require.NoError(t, secretErr, "list error must not delete the auth Secret")
+	})
+
 	t.Run("cleans up the claimed pod when wait fails and no sibling exists", func(t *testing.T) {
 		sessionID := "sess-wait-cleanup"
 		client := fake.NewSimpleClientset()

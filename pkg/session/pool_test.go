@@ -431,6 +431,48 @@ func TestClaimPod(t *testing.T) {
 		_, secretErr := pool.clientset.CoreV1().Secrets(testNamespace).Get(ctx, AuthSecretName(sessionID), metav1.GetOptions{})
 		require.NoError(t, secretErr, "shared auth Secret must remain")
 	})
+
+	t.Run("breaks CreationTimestamp ties by pod name", func(t *testing.T) {
+		sessionID := "session-dedupe-tie"
+		created := metav1.NewTime(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+		aaa := unassignedPod("warm-aaa", "10.0.0.1", created.Time)
+		aaa.Labels[LabelSessionID] = sessionID
+		aaa.CreationTimestamp = created
+		zzz := unassignedPod("warm-zzz", "127.0.0.1", created.Time)
+		zzz.Labels[LabelSessionID] = sessionID
+		zzz.CreationTimestamp = created
+
+		client := fake.NewSimpleClientset(aaa.DeepCopy(), zzz.DeepCopy())
+		pool := NewWarmPool(client, newTestConfig(), slog.Default())
+
+		ip, name := pool.keepOldestAssigned(t.Context(), sessionID, "warm-zzz", "127.0.0.1")
+
+		assert.Equal(t, "warm-aaa", name)
+		assert.Equal(t, "10.0.0.1", ip)
+		_, zzzErr := client.CoreV1().Pods(testNamespace).Get(t.Context(), "warm-zzz", metav1.GetOptions{})
+		assert.True(t, k8serrors.IsNotFound(zzzErr), "lexicographically later name must be deleted on a timestamp tie")
+		kept, getErr := client.CoreV1().Pods(testNamespace).Get(t.Context(), "warm-aaa", metav1.GetOptions{})
+		require.NoError(t, getErr)
+		assert.Equal(t, sessionID, kept.Labels[LabelSessionID])
+	})
+}
+
+func TestComparePodAge(t *testing.T) {
+	t.Parallel()
+	earlier := metav1.NewTime(time.Date(2026, 9, 4, 11, 0, 0, 0, time.UTC))
+	later := metav1.NewTime(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	same := metav1.NewTime(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+
+	older := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "z", CreationTimestamp: earlier}}
+	newer := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "a", CreationTimestamp: later}}
+	assert.Equal(t, -1, comparePodAge(older, newer))
+	assert.Equal(t, 1, comparePodAge(newer, older))
+
+	aaa := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "warm-aaa", CreationTimestamp: same}}
+	zzz := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "warm-zzz", CreationTimestamp: same}}
+	assert.Equal(t, -1, comparePodAge(aaa, zzz))
+	assert.Equal(t, 1, comparePodAge(zzz, aaa))
+	assert.Equal(t, 0, comparePodAge(aaa, aaa))
 }
 
 func TestGetOrCreatePodAlwaysClaims(t *testing.T) {

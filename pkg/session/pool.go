@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -160,9 +161,7 @@ func (p *WarmPool) keepOldestAssigned(ctx context.Context, sessionID, claimedNam
 	if len(live) <= 1 {
 		return claimedIP, claimedName
 	}
-	slices.SortFunc(live, func(a, b corev1.Pod) int {
-		return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
-	})
+	slices.SortFunc(live, comparePodAge)
 	oldest := live[0]
 	for _, extra := range live[1:] {
 		p.logger.Info("claim: dropping extra pod for session; keeping oldest",
@@ -173,6 +172,13 @@ func (p *WarmPool) keepOldestAssigned(ctx context.Context, sessionID, claimedNam
 		return claimedIP, claimedName
 	}
 	return oldest.Status.PodIP, oldest.Name
+}
+
+func comparePodAge(a, b corev1.Pod) int {
+	if c := a.CreationTimestamp.Compare(b.CreationTimestamp.Time); c != 0 {
+		return c
+	}
+	return cmp.Compare(a.Name, b.Name)
 }
 
 // tryClaimPod attempts to claim a single pod. On failure after label patch, it rolls back.
