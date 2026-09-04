@@ -36,18 +36,19 @@ import (
 )
 
 const (
-	poolPodNamePrefix       = "cli-mcp-sandbox-"
-	poolReplenishDeadline   = 5 * time.Minute
-	waitingImagePullBackOff = "ImagePullBackOff"
-	waitingCrashLoopBackOff = "CrashLoopBackOff"
-	waitingErrImagePull     = "ErrImagePull"
+	poolPodNamePrefix = "cli-mcp-sandbox-"
+	// poolReplenishDeadline is how long a claim/replenish shortfall may last
+	// after first Ready before aggregate Ready is cleared. First Ready and
+	// overlay/size-increase waits are not deadline-bounded.
+	poolReplenishDeadline = 5 * time.Minute
 )
 
 type poolSnapshot struct {
-	desired      int32
-	ready        int32
-	unhealthy    bool
-	unhealthyMsg string
+	desired        int32
+	ready          int32
+	unhealthy      bool
+	unhealthyMsg   string
+	overlayRebuild bool
 }
 
 func isAssignedSandbox(pod corev1.Pod) bool {
@@ -75,19 +76,7 @@ func poolPodUnhealthy(pod corev1.Pod) bool {
 	if isAssignedSandbox(pod) || pod.DeletionTimestamp != nil {
 		return false
 	}
-	if pod.Status.Phase == corev1.PodFailed {
-		return true
-	}
-	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.State.Waiting == nil {
-			continue
-		}
-		switch cs.State.Waiting.Reason {
-		case waitingImagePullBackOff, waitingCrashLoopBackOff, waitingErrImagePull:
-			return true
-		}
-	}
-	return false
+	return pod.Status.Phase == corev1.PodFailed || session.HasUnhealthyWaiting(pod)
 }
 
 func observePool(pods []corev1.Pod, desired int32) poolSnapshot {
@@ -130,43 +119,63 @@ func (r *CliMcpInstanceReconciler) reconcilePool(ctx context.Context, inst *clim
 		return observePool(pods.Items, desired), fmt.Errorf("sandbox image is empty: set spec.sandbox.image or %s", envRelatedImageSandbox)
 	}
 
-	// Failed/backoff unassigned pods do not occupy pool slots; re-get skips claim.
-	// Terminating unassigned pods still occupy slots so we do not overshoot.
+	// Terminating unassigned pods occupy slots so we do not create over them.
+	// Stale/unhealthy pods are deleted; they occupy until the API object is gone.
 	pre := observePool(pods.Items, desired)
 
-	var keep []corev1.Pod
+	var terminating []corev1.Pod
+	var live []corev1.Pod
+	deletedSlots := 0
 	for i := range pods.Items {
 		pod := pods.Items[i]
 		if !isUnassignedSandbox(pod) {
 			continue
 		}
 		if pod.DeletionTimestamp != nil {
-			keep = append(keep, pod)
+			terminating = append(terminating, pod)
 			continue
 		}
 		stale := pod.Annotations[sandboxOverlayAnnotation] != hash
+		if stale {
+			pre.overlayRebuild = true
+		}
 		if stale || poolPodUnhealthy(pod) {
 			if err := r.deleteUnassignedIfStillUnassigned(ctx, &pod); err != nil {
 				return r.observeAfterMutate(ctx, inst, desired, pre, err)
 			}
+			occupies, occErr := r.unassignedOccupiesSlot(ctx, &pod)
+			if occErr != nil {
+				return r.observeAfterMutate(ctx, inst, desired, pre, occErr)
+			}
+			if occupies {
+				deletedSlots++
+			}
 			continue
 		}
-		keep = append(keep, pod)
+		live = append(live, pod)
 	}
 
-	slices.SortFunc(keep, func(a, b corev1.Pod) int {
+	slices.SortFunc(live, func(a, b corev1.Pod) int {
 		return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
 	})
 
-	surplus := max(len(keep)-int(desired), 0)
+	occupied := len(terminating) + len(live) + deletedSlots
+	surplus := min(max(occupied-int(desired), 0), len(live))
 	for i := range surplus {
-		if err := r.deleteUnassignedIfStillUnassigned(ctx, &keep[i]); err != nil {
+		if err := r.deleteUnassignedIfStillUnassigned(ctx, &live[i]); err != nil {
 			return r.observeAfterMutate(ctx, inst, desired, pre, err)
 		}
+		occupies, occErr := r.unassignedOccupiesSlot(ctx, &live[i])
+		if occErr != nil {
+			return r.observeAfterMutate(ctx, inst, desired, pre, occErr)
+		}
+		if occupies {
+			deletedSlots++
+		}
 	}
-	keep = keep[surplus:]
+	live = live[surplus:]
 
-	deficit := int(desired) - len(keep)
+	deficit := max(int(desired)-len(terminating)-len(live)-deletedSlots, 0)
 	for range deficit {
 		if err := r.createPoolPod(ctx, inst, cfg, hash); err != nil {
 			return r.observeAfterMutate(ctx, inst, desired, pre, err)
@@ -192,6 +201,9 @@ func (r *CliMcpInstanceReconciler) observeAfterMutate(ctx context.Context, inst 
 		if post.unhealthyMsg == "" {
 			post.unhealthyMsg = pre.unhealthyMsg
 		}
+	}
+	if pre.overlayRebuild {
+		post.overlayRebuild = true
 	}
 	return post, mutateErr
 }
@@ -229,6 +241,21 @@ func (r *CliMcpInstanceReconciler) deleteUnassignedIfStillUnassigned(ctx context
 	return nil
 }
 
+func (r *CliMcpInstanceReconciler) unassignedOccupiesSlot(ctx context.Context, pod *corev1.Pod) (bool, error) {
+	fresh := &corev1.Pod{}
+	err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, fresh)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("re-get pool pod %s after delete: %w", pod.Name, err)
+	}
+	if isAssignedSandbox(*fresh) {
+		return false, nil
+	}
+	return true, nil
+}
+
 func (r *CliMcpInstanceReconciler) createPoolPod(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, cfg session.SandboxConfig, hash string) error {
 	pod := session.BuildBasePodSpec(poolPodNamePrefix+uuid.NewString(), cfg)
 	if pod.Annotations == nil {
@@ -257,7 +284,7 @@ func poolReadyGate(orig *climcpv1alpha1.CliMcpInstance, pool poolSnapshot, now t
 
 	previouslyReady := meta.IsStatusConditionTrue(orig.Status.Conditions, climcpv1alpha1.ConditionReady)
 	increased := orig.Status.WarmPoolDesired < pool.desired
-	if increased || !previouslyReady {
+	if increased || pool.overlayRebuild || !previouslyReady {
 		return false, climcpv1alpha1.ReasonWarmPoolNotReady, fmt.Sprintf("waiting for warm pool %d/%d", pool.ready, pool.desired)
 	}
 	if shortfallPastDeadline(orig, now) {

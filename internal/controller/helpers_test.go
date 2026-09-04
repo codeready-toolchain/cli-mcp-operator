@@ -155,9 +155,24 @@ func TestSandboxPodPredicate(t *testing.T) {
 
 	backoff := unassigned.DeepCopy()
 	backoff.Status.ContainerStatuses = []corev1.ContainerStatus{{
-		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: waitingImagePullBackOff}},
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: session.WaitingImagePullBackOff}},
 	}}
 	assert.True(t, p.Update(event.UpdateEvent{ObjectOld: unassigned, ObjectNew: backoff}))
+}
+
+func TestMapSandboxPod(t *testing.T) {
+	t.Parallel()
+	pod := sandboxPod("p", "sess", time.Now(), time.Now())
+	reqs := mapSandboxPod(t.Context(), &pod)
+	require.Len(t, reqs, 1)
+	assert.Equal(t, "oc", reqs[0].Name)
+	assert.Equal(t, "ns", reqs[0].Namespace)
+
+	assert.Empty(t, mapSandboxPod(t.Context(), &corev1.Secret{}))
+
+	unlabeled := pod.DeepCopy()
+	delete(unlabeled.Labels, session.LabelInstance)
+	assert.Empty(t, mapSandboxPod(t.Context(), unlabeled))
 }
 
 func TestMapSecretIgnoresSessionAuth(t *testing.T) {
@@ -315,9 +330,24 @@ func TestPoolPodUnhealthy(t *testing.T) {
 	assert.True(t, poolPodUnhealthy(corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodFailed}}))
 	assert.True(t, poolPodUnhealthy(corev1.Pod{Status: corev1.PodStatus{
 		ContainerStatuses: []corev1.ContainerStatus{{
-			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: waitingCrashLoopBackOff}},
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: session.WaitingCrashLoopBackOff}},
 		}},
 	}}))
+	assert.True(t, poolPodUnhealthy(corev1.Pod{Status: corev1.PodStatus{
+		ContainerStatuses: []corev1.ContainerStatus{{
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: session.WaitingErrImagePull}},
+		}},
+	}}))
+	assert.True(t, poolPodUnhealthy(corev1.Pod{Status: corev1.PodStatus{
+		ContainerStatuses: []corev1.ContainerStatus{{
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: session.WaitingImagePullBackOff}},
+		}},
+	}}))
+	terminating := sandboxPod("dying", "", time.Now(), time.Now())
+	ts := metav1.Now()
+	terminating.DeletionTimestamp = &ts
+	terminating.Status.Phase = corev1.PodFailed
+	assert.False(t, poolPodUnhealthy(terminating))
 	assigned := sandboxPod("p", "sess", time.Now(), time.Now())
 	assigned.Status.Phase = corev1.PodFailed
 	assert.False(t, poolPodUnhealthy(assigned))
@@ -328,7 +358,11 @@ func TestPoolReadyGate(t *testing.T) {
 	now := time.Now().UTC()
 	snap := poolSnapshot{desired: 2, ready: 1}
 
-	ok, reason, _ := poolReadyGate(&climcpv1alpha1.CliMcpInstance{}, snap, now)
+	ok, reason, _ := poolReadyGate(&climcpv1alpha1.CliMcpInstance{}, poolSnapshot{desired: 0, ready: 0}, now)
+	assert.True(t, ok)
+	assert.Equal(t, climcpv1alpha1.ReasonReady, reason)
+
+	ok, reason, _ = poolReadyGate(&climcpv1alpha1.CliMcpInstance{}, snap, now)
 	assert.False(t, ok)
 	assert.Equal(t, climcpv1alpha1.ReasonWarmPoolNotReady, reason)
 
@@ -372,6 +406,15 @@ func TestPoolReadyGate(t *testing.T) {
 	decrease := ready.DeepCopy()
 	decrease.Status.WarmPoolDesired = 4
 	ok, reason, _ = poolReadyGate(decrease, poolSnapshot{desired: 2, ready: 1}, now)
+	assert.True(t, ok)
+	assert.Equal(t, climcpv1alpha1.ReasonReady, reason)
+
+	rebuild := ready.DeepCopy()
+	ok, reason, _ = poolReadyGate(rebuild, poolSnapshot{desired: 2, ready: 0, overlayRebuild: true}, now)
+	assert.False(t, ok)
+	assert.Equal(t, climcpv1alpha1.ReasonWarmPoolNotReady, reason)
+
+	ok, reason, _ = poolReadyGate(rebuild, poolSnapshot{desired: 2, ready: 2, overlayRebuild: true}, now)
 	assert.True(t, ok)
 	assert.Equal(t, climcpv1alpha1.ReasonReady, reason)
 }
@@ -424,6 +467,19 @@ func TestPoolRequeueAfter(t *testing.T) {
 		now := time.Date(2025, 1, 1, 12, 1, 0, 0, time.UTC)
 		unhealthy := poolSnapshot{desired: 2, ready: 1, unhealthy: true}
 		assert.Equal(t, time.Duration(0), poolRequeueAfter(inst, unhealthy, now))
+	})
+
+	t.Run("returns 0 when instance is not Ready yet", func(t *testing.T) {
+		t.Parallel()
+		inst := &climcpv1alpha1.CliMcpInstance{
+			Status: climcpv1alpha1.CliMcpInstanceStatus{
+				Conditions: []metav1.Condition{
+					{Type: climcpv1alpha1.ConditionReady, Status: metav1.ConditionFalse},
+				},
+			},
+		}
+		now := time.Date(2025, 1, 1, 12, 1, 0, 0, time.UTC)
+		assert.Equal(t, time.Duration(0), poolRequeueAfter(inst, shortfall, now))
 	})
 }
 
@@ -577,6 +633,104 @@ func TestReconcilePoolTerminatingOccupiesSlot(t *testing.T) {
 	require.NoError(t, recErr)
 	assert.Equal(t, int32(1), snap.desired)
 	assert.Equal(t, int32(0), snap.ready)
+}
+
+func TestReconcilePoolStaleDeleteDoesNotCreateWhileTerminating(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
+
+	inst := &climcpv1alpha1.CliMcpInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "oc", Namespace: "ns"},
+		Spec: climcpv1alpha1.CliMcpInstanceSpec{
+			Sandbox: climcpv1alpha1.SandboxSpec{WarmPoolSize: 1, Image: "img:test"},
+		},
+	}
+	stale := sandboxPod("stale", "", time.Now(), time.Now())
+	stale.Annotations[sandboxOverlayAnnotation] = "not-the-current-hash"
+
+	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inst.DeepCopy(), stale.DeepCopy()).Build()
+	c := interceptor.NewClient(inner, interceptor.Funcs{
+		Delete: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
+			return nil
+		},
+		Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+			t.Fatal("must not create a replacement while a just-deleted stale pod occupies a slot")
+			return fmt.Errorf("unexpected create")
+		},
+	})
+	r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
+	snap, recErr := r.reconcilePool(t.Context(), inst, true)
+	require.NoError(t, recErr)
+	assert.Equal(t, int32(1), snap.desired)
+	assert.True(t, snap.overlayRebuild)
+}
+
+func TestReconcilePoolReplacesStaleWhenDeleteSucceeds(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
+
+	inst := &climcpv1alpha1.CliMcpInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "oc", Namespace: "ns"},
+		Spec: climcpv1alpha1.CliMcpInstanceSpec{
+			Sandbox: climcpv1alpha1.SandboxSpec{WarmPoolSize: 1, Image: "img:test"},
+		},
+	}
+	hash, err := overlayHash((&CliMcpInstanceReconciler{}).poolSandboxConfig(inst))
+	require.NoError(t, err)
+
+	stale := sandboxPod("stale", "", time.Now(), time.Now())
+	stale.Annotations[sandboxOverlayAnnotation] = "not-the-current-hash"
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inst.DeepCopy(), stale.DeepCopy()).Build()
+	r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
+	snap, recErr := r.reconcilePool(t.Context(), inst, true)
+	require.NoError(t, recErr)
+	assert.Equal(t, int32(1), snap.desired)
+	assert.True(t, snap.overlayRebuild)
+
+	var pods corev1.PodList
+	require.NoError(t, c.List(t.Context(), &pods, client.InNamespace("ns"), client.MatchingLabels(sandboxLabels("oc"))))
+	require.Len(t, pods.Items, 1)
+	assert.NotEqual(t, "stale", pods.Items[0].Name)
+	assert.Equal(t, hash, pods.Items[0].Annotations[sandboxOverlayAnnotation])
+}
+
+func TestReconcilePoolAssignedDoesNotOccupySlot(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
+
+	inst := &climcpv1alpha1.CliMcpInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "oc", Namespace: "ns"},
+		Spec: climcpv1alpha1.CliMcpInstanceSpec{
+			Sandbox: climcpv1alpha1.SandboxSpec{WarmPoolSize: 1, Image: "img:test"},
+		},
+	}
+	assigned := sandboxPod("kept-session", "sess", time.Now(), time.Now())
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inst.DeepCopy(), assigned.DeepCopy()).Build()
+	r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
+	snap, recErr := r.reconcilePool(t.Context(), inst, true)
+	require.NoError(t, recErr)
+	assert.Equal(t, int32(1), snap.desired)
+
+	got := &corev1.Pod{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: "kept-session", Namespace: "ns"}, got))
+	assert.Equal(t, "sess", got.Labels[session.LabelSessionID])
+
+	var pods corev1.PodList
+	require.NoError(t, c.List(t.Context(), &pods, client.InNamespace("ns"), client.MatchingLabels(sandboxLabels("oc"))))
+	unassigned := 0
+	for i := range pods.Items {
+		if _, ok := pods.Items[i].Labels[session.LabelSessionID]; !ok {
+			unassigned++
+		}
+	}
+	assert.Equal(t, 1, unassigned)
 }
 
 func sandboxPod(name, sessionID string, created, activity time.Time) corev1.Pod {

@@ -134,22 +134,7 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 
 	claimedIP, claimedPodName, claimErr := m.pool.ClaimPod(ctx, sessionID)
 	if claimErr == nil {
-		// Claim only guarantees IP + /assign; wait for PodReady before caching.
-		readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
-		if readyErr != nil {
-			// On caller abort, leave the pod for sibling replicas still in
-			// discover/waitForReady. On ready-timeout failure the agent already
-			// has the token, so delete — it cannot return to the unassigned set.
-			if shouldCleanupAfterWaitFailure(readyErr) {
-				m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
-			}
-			return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
-		}
-		if readyIP == "" {
-			readyIP = claimedIP
-		}
-		m.cache.Set(sessionID, readyIP, claimedPodName)
-		return readyIP, nil
+		return m.waitAndCacheClaim(ctx, sessionID, claimedPodName, claimedIP)
 	}
 	m.logger.Debug("no unassigned pod claimed, creating on demand", "session", sessionID, "error", claimErr)
 
@@ -179,6 +164,37 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	}
 	m.cache.Set(sessionID, ip, podName)
 	return ip, nil
+}
+
+// waitAndCacheClaim waits for a claimed pool pod to become Ready. If that pod
+// disappears because a sibling kept an older assigned pod, rediscover and do
+// not delete the shared auth Secret.
+func (m *SessionManager) waitAndCacheClaim(ctx context.Context, sessionID, podName, fallbackIP string) (string, error) {
+	readyIP, readyErr := m.waitForReady(ctx, podName)
+	if readyErr == nil {
+		if readyIP == "" {
+			readyIP = fallbackIP
+		}
+		m.cache.Set(sessionID, readyIP, podName)
+		return readyIP, nil
+	}
+	if !shouldCleanupAfterWaitFailure(readyErr) {
+		return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
+	}
+	ip, other, discErr := m.discoverPod(ctx, sessionID)
+	if discErr == nil && other != "" && other != podName {
+		if ip == "" {
+			var waitErr error
+			ip, waitErr = m.waitForReady(ctx, other)
+			if waitErr != nil {
+				return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
+			}
+		}
+		m.cache.Set(sessionID, ip, other)
+		return ip, nil
+	}
+	m.bestEffortCleanupFailedPod(podName, sessionID)
+	return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
 }
 
 // discoverPod lists pods by label selector and returns the oldest Ready pod's IP.

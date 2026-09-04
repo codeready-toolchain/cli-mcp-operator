@@ -451,6 +451,46 @@ func markPodReady(mgr *SessionManager, sessionID, ip string) error {
 	return fmt.Errorf("pod %s not found before deadline", podNamePrefix+sessionID)
 }
 
+func TestWaitAndCacheClaim(t *testing.T) {
+	t.Run("rediscovers sibling and does not delete the auth Secret", func(t *testing.T) {
+		sessionID := "sess-wait-dedupe"
+		sibling := readyPod(sessionID, "10.0.0.21", time.Now().Add(-time.Minute))
+		sibling.Name = "cli-mcp-sandbox-older-uuid"
+		client := fake.NewSimpleClientset(sibling.DeepCopy())
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		ip, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, "missing-claimed", "10.0.0.99")
+
+		require.NoError(t, waitErr)
+		assert.Equal(t, "10.0.0.21", ip)
+		cachedIP, cachedName, ok := mgr.cache.Get(sessionID)
+		assert.True(t, ok)
+		assert.Equal(t, "10.0.0.21", cachedIP)
+		assert.Equal(t, sibling.Name, cachedName)
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		require.NoError(t, secretErr)
+	})
+
+	t.Run("cleans up the claimed pod when wait fails and no sibling exists", func(t *testing.T) {
+		sessionID := "sess-wait-cleanup"
+		client := fake.NewSimpleClientset()
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		_, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, "missing-claimed", "10.0.0.99")
+
+		require.Error(t, waitErr)
+		assert.Contains(t, waitErr.Error(), "claimed pod not ready")
+		_, _, ok := mgr.cache.Get(sessionID)
+		assert.False(t, ok)
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		assert.True(t, apierrors.IsNotFound(secretErr), "auth Secret must be deleted when no sibling kept the session")
+	})
+}
+
 func TestBuildPodSpec(t *testing.T) {
 	// given
 	mgr := newTestManager(t)
