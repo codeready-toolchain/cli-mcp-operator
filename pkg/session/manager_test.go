@@ -376,6 +376,37 @@ func TestGetOrCreatePod(t *testing.T) {
 		require.NoError(t, secretErr)
 	})
 
+	t.Run("rediscovers UUID pool pod after failed claim", func(t *testing.T) {
+		sessionID := "inv-rediscover"
+		poolPod := readyPod(sessionID, "10.0.0.55", time.Now().Add(-time.Minute))
+		poolPod.Name = "cli-mcp-sandbox-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+		client := fake.NewSimpleClientset()
+		lists := 0
+		client.PrependReactor("list", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			lists++
+			if lists < 3 {
+				return true, &corev1.PodList{}, nil
+			}
+			return true, &corev1.PodList{Items: []corev1.Pod{*poolPod.DeepCopy()}}, nil
+		})
+		client.PrependReactor("create", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			t.Fatal("must not create on-demand pod after rediscover")
+			return true, nil, fmt.Errorf("unexpected create")
+		})
+		mgr := newTestManagerWithClient(t, client)
+
+		ip, err := mgr.GetOrCreatePod(t.Context(), sessionID)
+
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.55", ip)
+		assert.GreaterOrEqual(t, lists, 3)
+		cachedIP, cachedName, ok := mgr.cache.Get(sessionID)
+		assert.True(t, ok)
+		assert.Equal(t, "10.0.0.55", cachedIP)
+		assert.Equal(t, poolPod.Name, cachedName)
+	})
+
 	t.Run("rediscovers when create returns AlreadyExists", func(t *testing.T) {
 		// given
 		sessionID := "inv-exists"

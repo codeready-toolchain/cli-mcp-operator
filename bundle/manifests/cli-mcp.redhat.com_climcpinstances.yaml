@@ -289,8 +289,8 @@ spec:
                   warmPoolSize:
                     default: 0
                     description: |-
-                      WarmPoolSize is the desired unassigned pool. The operator does not
-                      replenish the pool until Phase 5. Default 0 (on-demand create only).
+                      WarmPoolSize is the desired unassigned pool the operator maintains.
+                      Default 0 (on-demand create only). Changing this field does not roll MCP.
                     format: int32
                     minimum: 0
                     type: integer
@@ -439,7 +439,7 @@ spec:
               warmPoolReady:
                 description: |-
                   WarmPoolReady is the number of unassigned Ready pool pods.
-                  Always published; pool replenishment is Phase 5.
+                  Always published.
                 format: int32
                 type: integer
             required:

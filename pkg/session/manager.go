@@ -153,9 +153,14 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	}
 	m.logger.Debug("no unassigned pod claimed, creating on demand", "session", sessionID, "error", claimErr)
 
-	// Phase 5 follow-up: after a failed claim, rediscover before create. A sibling
-	// may have already claimed a UUID-named pool pod for this session; on-demand
-	// create uses cli-mcp-sandbox-<session-id> so AlreadyExists will not catch that.
+	ip, podName, err = m.discoverPod(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("discover pod after claim: %w", err)
+	}
+	if ip != "" {
+		m.cache.Set(sessionID, ip, podName)
+		return ip, nil
+	}
 
 	ip, podName, err = m.createSandboxPod(ctx, sessionID)
 	if err != nil {

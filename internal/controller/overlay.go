@@ -18,6 +18,10 @@ package controller
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -65,6 +69,42 @@ func sandboxOverlay(spec climcpv1alpha1.SandboxSpec, resolvedImage string) sessi
 		Env:             spec.Env,
 		AgentPort:       defaults.AgentPort,
 	}
+}
+
+func (r *CliMcpInstanceReconciler) poolSandboxConfig(inst *climcpv1alpha1.CliMcpInstance) session.SandboxConfig {
+	cfg := sandboxOverlay(inst.Spec.Sandbox, r.resolvedSandboxImage(inst.Spec.Sandbox))
+	cfg.InstanceName = inst.Name
+	cfg.Namespace = inst.Namespace
+	cfg.ServiceAccountName = sandboxSAName(inst.Name)
+	cfg.KubeconfigSecret = kubeconfigSecretName(inst.Name)
+	return cfg
+}
+
+type overlayFingerprint struct {
+	Image           string            `json:"image"`
+	CPURequest      string            `json:"cpuRequest"`
+	CPULimit        string            `json:"cpuLimit"`
+	MemoryRequest   string            `json:"memoryRequest"`
+	MemoryLimit     string            `json:"memoryLimit"`
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy"`
+	Env             []corev1.EnvVar   `json:"env"`
+}
+
+func overlayHash(cfg session.SandboxConfig) (string, error) {
+	raw, err := json.Marshal(overlayFingerprint{
+		Image:           cfg.Image,
+		CPURequest:      cfg.CPURequest,
+		CPULimit:        cfg.CPULimit,
+		MemoryRequest:   cfg.MemoryRequest,
+		MemoryLimit:     cfg.MemoryLimit,
+		ImagePullPolicy: cfg.ImagePullPolicy,
+		Env:             cfg.Env,
+	})
+	if err != nil {
+		return "", fmt.Errorf("hash sandbox overlay: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func quantityOr(list corev1.ResourceList, name corev1.ResourceName, fallback string) string {

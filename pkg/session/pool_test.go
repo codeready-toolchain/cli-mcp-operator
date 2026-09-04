@@ -77,6 +77,11 @@ func TestClaimPod(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "session-abc", claimed.Labels[LabelSessionID])
 
+		lastAct, err := time.Parse(time.RFC3339, claimed.Annotations[AnnotationLastActivity])
+		require.NoError(t, err, "last-activity annotation must be valid RFC3339")
+		assert.WithinDuration(t, time.Now().UTC(), lastAct, 5*time.Second,
+			"claim must refresh last-activity to ~now")
+
 		secret, err := pool.clientset.CoreV1().Secrets(testNamespace).Get(ctx, AuthSecretName("session-abc"), metav1.GetOptions{})
 		require.NoError(t, err)
 		assert.Equal(t, "session-abc", secret.Labels[LabelSessionID])

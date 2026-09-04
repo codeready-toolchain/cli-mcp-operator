@@ -19,7 +19,7 @@ import (
 const assignTimeout = 10 * time.Second
 
 // WarmPool claims unassigned sandbox pods for new sessions. It does not
-// replenish the pool; that is the operator's job (Phase 5).
+// replenish the pool; that is the operator's job.
 type WarmPool struct {
 	clientset   kubernetes.Interface
 	config      SandboxConfig
@@ -109,10 +109,13 @@ func (p *WarmPool) ClaimPod(ctx context.Context, sessionID string) (podIP, podNa
 }
 
 // tryClaimPod attempts to claim a single pod. On failure after label patch, it rolls back.
+// The patch also refreshes last-activity so idle GC starts timing from claim,
+// not from pool creation.
 func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID string) (podIP, podName string, err error) {
+	now := time.Now().UTC().Format(time.RFC3339)
 	patchData := fmt.Sprintf(
-		`{"metadata":{"labels":{%q:%q},"resourceVersion":%q}}`,
-		LabelSessionID, sessionID, pod.ResourceVersion,
+		`{"metadata":{"labels":{%q:%q},"annotations":{%q:%q},"resourceVersion":%q}}`,
+		LabelSessionID, sessionID, AnnotationLastActivity, now, pod.ResourceVersion,
 	)
 	patched, patchErr := p.clientset.CoreV1().Pods(p.config.Namespace).Patch(
 		ctx, pod.Name, types.MergePatchType, []byte(patchData), metav1.PatchOptions{},

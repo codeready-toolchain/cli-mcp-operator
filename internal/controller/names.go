@@ -43,7 +43,8 @@ const (
 	proxyPort        = int32(8443)
 	sandboxAgentPort = int32(8090)
 
-	hmacRVAnnotation = "cli-mcp.redhat.com/hmac-resource-version"
+	hmacRVAnnotation         = "cli-mcp.redhat.com/hmac-resource-version"
+	sandboxOverlayAnnotation = "cli-mcp.redhat.com/sandbox-overlay"
 
 	openshiftServingCertAnnotation = "service.beta.openshift.io/serving-cert-secret-name"
 
