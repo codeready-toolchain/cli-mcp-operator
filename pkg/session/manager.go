@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"time"
 
@@ -134,28 +135,18 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 
 	claimedIP, claimedPodName, claimErr := m.pool.ClaimPod(ctx, sessionID)
 	if claimErr == nil {
-		// Claim only guarantees IP + /assign; wait for PodReady before caching.
-		readyIP, readyErr := m.waitForReady(ctx, claimedPodName)
-		if readyErr != nil {
-			// On caller abort, leave the pod for sibling replicas still in
-			// discover/waitForReady. On ready-timeout failure the agent already
-			// has the token, so delete — it cannot return to the unassigned set.
-			if shouldCleanupAfterWaitFailure(readyErr) {
-				m.bestEffortCleanupFailedPod(claimedPodName, sessionID)
-			}
-			return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
-		}
-		if readyIP == "" {
-			readyIP = claimedIP
-		}
-		m.cache.Set(sessionID, readyIP, claimedPodName)
-		return readyIP, nil
+		return m.waitAndCacheClaim(ctx, sessionID, claimedPodName, claimedIP)
 	}
 	m.logger.Debug("no unassigned pod claimed, creating on demand", "session", sessionID, "error", claimErr)
 
-	// Phase 5 follow-up: after a failed claim, rediscover before create. A sibling
-	// may have already claimed a UUID-named pool pod for this session; on-demand
-	// create uses cli-mcp-sandbox-<session-id> so AlreadyExists will not catch that.
+	ip, podName, err = m.discoverPod(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("discover pod after claim: %w", err)
+	}
+	if ip != "" {
+		m.cache.Set(sessionID, ip, podName)
+		return ip, nil
+	}
 
 	ip, podName, err = m.createSandboxPod(ctx, sessionID)
 	if err != nil {
@@ -174,6 +165,64 @@ func (m *SessionManager) GetOrCreatePod(ctx context.Context, sessionID string) (
 	}
 	m.cache.Set(sessionID, ip, podName)
 	return ip, nil
+}
+
+// waitAndCacheClaim waits for a claimed pool pod to become Ready. If that pod
+// disappears because a sibling kept an older assigned pod, rediscover and do
+// not delete the shared auth Secret.
+func (m *SessionManager) waitAndCacheClaim(ctx context.Context, sessionID, podName, fallbackIP string) (string, error) {
+	readyIP, readyErr := m.waitForReady(ctx, podName)
+	if readyErr == nil {
+		if readyIP == "" {
+			readyIP = fallbackIP
+		}
+		m.cache.Set(sessionID, readyIP, podName)
+		return readyIP, nil
+	}
+	if !shouldCleanupAfterWaitFailure(readyErr) {
+		return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
+	}
+	ip, other, found, listErr := m.lookupAssignedSibling(ctx, sessionID, podName)
+	if listErr != nil {
+		return "", fmt.Errorf("claimed pod not ready: %w", errors.Join(readyErr, listErr))
+	}
+	if found {
+		if other != "" && ip != "" {
+			m.cache.Set(sessionID, ip, other)
+			return ip, nil
+		}
+		return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
+	}
+	m.bestEffortCleanupFailedPod(podName, sessionID)
+	return "", fmt.Errorf("claimed pod not ready: %w", readyErr)
+}
+
+// lookupAssignedSibling is a non-waiting list of assigned pods for sessionID,
+// excluding excludeName. A list error must not be treated as "no sibling".
+func (m *SessionManager) lookupAssignedSibling(ctx context.Context, sessionID, excludeName string) (ip, name string, found bool, err error) {
+	pods, err := m.clientset.CoreV1().Pods(m.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: AssignedSelector(m.config.InstanceName, sessionID),
+	})
+	if err != nil {
+		return "", "", false, fmt.Errorf("list assigned pods: %w", err)
+	}
+	var ready []corev1.Pod
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.Name == excludeName || p.DeletionTimestamp != nil || isTerminalPod(p) {
+			continue
+		}
+		found = true
+		if isPodReady(p) {
+			ready = append(ready, *p)
+		}
+	}
+	if len(ready) == 0 {
+		return "", "", found, nil
+	}
+	slices.SortFunc(ready, comparePodAge)
+	oldest := ready[0]
+	return oldest.Status.PodIP, oldest.Name, true, nil
 }
 
 // discoverPod lists pods by label selector and returns the oldest Ready pod's IP.

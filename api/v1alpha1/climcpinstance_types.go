@@ -33,6 +33,8 @@ const (
 	ReasonSecretKeysInvalid     = "SecretKeysInvalid"
 	ReasonDeploymentUnavailable = "DeploymentUnavailable"
 	ReasonChildrenNotReady      = "ChildrenNotReady"
+	ReasonWarmPoolNotReady      = "WarmPoolNotReady"
+	ReasonWarmPoolUnhealthy     = "WarmPoolUnhealthy"
 )
 
 // CliMcpInstanceSpec defines the desired state of one MCP sandbox class / instance.
@@ -65,8 +67,8 @@ type SandboxSpec struct {
 	// +kubebuilder:default="30m"
 	IdleTimeout metav1.Duration `json:"idleTimeout,omitempty"`
 
-	// WarmPoolSize is the desired unassigned pool. The operator does not
-	// replenish the pool until Phase 5. Default 0 (on-demand create only).
+	// WarmPoolSize is the desired unassigned pool the operator maintains.
+	// Default 0 (on-demand create only). Changing this field does not roll MCP.
 	// +kubebuilder:default=0
 	// +kubebuilder:validation:Minimum=0
 	WarmPoolSize int32 `json:"warmPoolSize,omitempty"`
@@ -98,7 +100,7 @@ type ServerContainerSpec struct {
 // CliMcpInstanceStatus is observed instance state.
 type CliMcpInstanceStatus struct {
 	// WarmPoolReady is the number of unassigned Ready pool pods.
-	// Always published; pool replenishment is Phase 5.
+	// Always published.
 	WarmPoolReady int32 `json:"warmPoolReady"`
 
 	// WarmPoolDesired is spec.sandbox.warmPoolSize. Always published.

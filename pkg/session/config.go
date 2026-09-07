@@ -13,6 +13,10 @@ const (
 	AnnotationCreatedAt    = "cli-mcp.redhat.com/created-at"
 	AnnotationLastActivity = "cli-mcp.redhat.com/last-activity"
 
+	WaitingImagePullBackOff = "ImagePullBackOff"
+	WaitingCrashLoopBackOff = "CrashLoopBackOff"
+	WaitingErrImagePull     = "ErrImagePull"
+
 	//nolint:gosec // G101: K8s resource name prefix, not a credential.
 	authSecretNamePrefix = "cli-mcp-sandbox-auth-"
 )

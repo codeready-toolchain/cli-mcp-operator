@@ -293,8 +293,8 @@ _Considered and rejected: `spec.proxy.enabled: false` and empty structs now (spe
 2. **Every operator-managed namespaced child is present and matches spec** (SAs, Role/RoleBinding, Service, NetworkPolicies, sandbox SA, HMAC Secret).
 3. **MCP is ready to receive requests:** Deployment Available — desired replicas ready, including the kube-rbac-proxy sidecar (readiness probes on both containers).
 4. **Warm pool, if `warmPoolSize > 0`:**
-   - **First Ready** (and after `warmPoolSize` increases): wait until there are `warmPoolSize` unassigned **Ready** pods.
-   - **After that:** a claim/replenish dip does **not** clear `Ready` unless a pool pod is Failed / ImagePullBackOff / CrashLoopBackOff, or the pool is still short of desired past a **replenish deadline** (operator constant, not a spec field). Decreasing `warmPoolSize` does not wait.
+   - **First Ready** (and after `warmPoolSize` increases, and after an unassigned overlay/hash rebuild): wait until there are `warmPoolSize` unassigned **Ready** pods.
+   - **After that:** a claim/replenish dip does **not** clear `Ready` unless a pool pod is Failed / ImagePullBackOff / CrashLoopBackOff, or the pool is still short of desired past a **replenish deadline** of **5 minutes** (operator constant, not a spec field). Decreasing `warmPoolSize` does not wait.
    - Always publish `status.warmPoolReady` / `status.warmPoolDesired`. Optional condition `WarmPoolReady` is the strict count (may flap); aggregate `Ready` does not flap on claim.
 
 `warmPoolSize: 0` skips (4). Later proxy children fold into the same `Ready`. No separate `ProxyReady` until that pass needs it.

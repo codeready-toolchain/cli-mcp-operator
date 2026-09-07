@@ -11,7 +11,7 @@ import (
 )
 
 // BuildBasePodSpec constructs the shared sandbox pod spec used by MCP on-demand
-// create and (later) the operator warm pool. It sets instance+component labels,
+// create and the operator warm pool. It sets instance+component labels,
 // dedicated SA, automountServiceAccountToken false, kubeconfig mount, and
 // today's non-root / drop-caps security context, then merges the class overlay
 // (image, resources, env, imagePullPolicy). Callers add session-specific

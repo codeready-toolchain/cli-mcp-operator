@@ -39,8 +39,9 @@ func isSandboxPod(obj client.Object) bool {
 	return pod.Labels[session.LabelInstance] != ""
 }
 
-// sandboxPodPredicate enqueues Create, Delete, and session-id assignment.
-// It drops last-activity annotation patches and routine kubelet status.
+// sandboxPodPredicate enqueues Create, Delete, session-id assignment, and
+// Ready/Failed/backoff updates so pool Ready can converge. It drops
+// last-activity annotation patches and routine kubelet status.
 type sandboxPodPredicate struct{}
 
 func (sandboxPodPredicate) Create(e event.CreateEvent) bool {
@@ -66,7 +67,23 @@ func (sandboxPodPredicate) Update(e event.UpdateEvent) bool {
 	}
 	_, oldHas := oldPod.Labels[session.LabelSessionID]
 	_, newHas := newPod.Labels[session.LabelSessionID]
-	return !oldHas && newHas
+	if oldHas != newHas {
+		return true
+	}
+	return poolReadinessChanged(oldPod, newPod)
+}
+
+func poolReadinessChanged(oldPod, newPod *corev1.Pod) bool {
+	if isAssignedSandbox(*oldPod) && isAssignedSandbox(*newPod) {
+		return false
+	}
+	if sandboxPodReady(oldPod) != sandboxPodReady(newPod) {
+		return true
+	}
+	if (oldPod.Status.Phase == corev1.PodFailed) != (newPod.Status.Phase == corev1.PodFailed) {
+		return true
+	}
+	return poolPodUnhealthy(*oldPod) != poolPodUnhealthy(*newPod)
 }
 
 func mapSandboxPod(_ context.Context, obj client.Object) []reconcile.Request {

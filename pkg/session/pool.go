@@ -1,10 +1,12 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sort"
 	"time"
 
@@ -19,7 +21,7 @@ import (
 const assignTimeout = 10 * time.Second
 
 // WarmPool claims unassigned sandbox pods for new sessions. It does not
-// replenish the pool; that is the operator's job (Phase 5).
+// replenish the pool; that is the operator's job.
 type WarmPool struct {
 	clientset   kubernetes.Interface
 	config      SandboxConfig
@@ -73,10 +75,38 @@ func isTerminalPod(pod *corev1.Pod) bool {
 	return pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded
 }
 
+// HasUnhealthyWaiting reports ImagePullBackOff / CrashLoopBackOff / ErrImagePull.
+func HasUnhealthyWaiting(pod corev1.Pod) bool {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting == nil {
+			continue
+		}
+		switch cs.State.Waiting.Reason {
+		case WaitingImagePullBackOff, WaitingCrashLoopBackOff, WaitingErrImagePull:
+			return true
+		}
+	}
+	return false
+}
+
+// IsClaimableUnassigned is true when MCP may label-patch this unassigned pod.
+// Terminating and backoff pods are skipped: the operator is deleting them, and
+// /assign on a dying or crashlooping agent poisons the session.
+func IsClaimableUnassigned(pod *corev1.Pod) bool {
+	if pod.DeletionTimestamp != nil || isTerminalPod(pod) || HasUnhealthyWaiting(*pod) {
+		return false
+	}
+	return true
+}
+
 // ClaimPod atomically claims an unassigned sandbox pod for the given session.
-// It patches the oldest unassigned pod with the session-id label using
+// It patches the oldest claimable unassigned pod with the session-id label using
 // resourceVersion for optimistic locking, creates the auth Secret, and
 // delivers the token via POST /assign to the agent.
+//
+// After a successful claim it re-lists assigned pods for the session and keeps
+// the oldest, deleting extras (not the auth Secret). Two replicas can otherwise
+// each claim a different UUID pool pod for the same session-id.
 //
 // On any failure after the label patch, it rolls back all changes.
 // Returns the pod IP and name, or an error if no pod could be claimed.
@@ -91,11 +121,12 @@ func (p *WarmPool) ClaimPod(ctx context.Context, sessionID string) (podIP, podNa
 
 	for i := range pods {
 		pod := &pods[i]
-		if isTerminalPod(pod) {
+		if !IsClaimableUnassigned(pod) {
 			continue
 		}
 		ip, name, claimErr := p.tryClaimPod(ctx, pod, sessionID)
 		if claimErr == nil {
+			ip, name = p.keepOldestAssigned(ctx, sessionID, name, ip)
 			return ip, name, nil
 		}
 		if k8serrors.IsConflict(claimErr) {
@@ -108,11 +139,56 @@ func (p *WarmPool) ClaimPod(ctx context.Context, sessionID string) (podIP, podNa
 	return "", "", fmt.Errorf("all unassigned claim attempts failed")
 }
 
+// keepOldestAssigned drops extra assigned pods for sessionID after this replica
+// claimed. The extra already received POST /assign, so it cannot return to the
+// unassigned pool — delete the pod, keep the shared auth Secret.
+func (p *WarmPool) keepOldestAssigned(ctx context.Context, sessionID, claimedName, claimedIP string) (string, string) {
+	podList, err := p.clientset.CoreV1().Pods(p.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: AssignedSelector(p.config.InstanceName, sessionID),
+	})
+	if err != nil {
+		p.logger.Warn("claim: failed to list assigned pods for session dedupe", "session", sessionID, "error", err)
+		return claimedIP, claimedName
+	}
+	live := make([]corev1.Pod, 0, len(podList.Items))
+	for i := range podList.Items {
+		pod := podList.Items[i]
+		if pod.DeletionTimestamp != nil || isTerminalPod(&pod) {
+			continue
+		}
+		live = append(live, pod)
+	}
+	if len(live) <= 1 {
+		return claimedIP, claimedName
+	}
+	slices.SortFunc(live, comparePodAge)
+	oldest := live[0]
+	for _, extra := range live[1:] {
+		p.logger.Info("claim: dropping extra pod for session; keeping oldest",
+			"session", sessionID, "keep", oldest.Name, "drop", extra.Name)
+		bestEffortDeletePod(ctx, p.clientset, p.config.Namespace, extra.Name, p.logger)
+	}
+	if oldest.Name == claimedName {
+		return claimedIP, claimedName
+	}
+	return oldest.Status.PodIP, oldest.Name
+}
+
+func comparePodAge(a, b corev1.Pod) int {
+	if c := a.CreationTimestamp.Compare(b.CreationTimestamp.Time); c != 0 {
+		return c
+	}
+	return cmp.Compare(a.Name, b.Name)
+}
+
 // tryClaimPod attempts to claim a single pod. On failure after label patch, it rolls back.
+// The patch also refreshes last-activity so idle GC starts timing from claim,
+// not from pool creation.
 func (p *WarmPool) tryClaimPod(ctx context.Context, pod *corev1.Pod, sessionID string) (podIP, podName string, err error) {
+	now := time.Now().UTC().Format(time.RFC3339)
 	patchData := fmt.Sprintf(
-		`{"metadata":{"labels":{%q:%q},"resourceVersion":%q}}`,
-		LabelSessionID, sessionID, pod.ResourceVersion,
+		`{"metadata":{"labels":{%q:%q},"annotations":{%q:%q},"resourceVersion":%q}}`,
+		LabelSessionID, sessionID, AnnotationLastActivity, now, pod.ResourceVersion,
 	)
 	patched, patchErr := p.clientset.CoreV1().Pods(p.config.Namespace).Patch(
 		ctx, pod.Name, types.MergePatchType, []byte(patchData), metav1.PatchOptions{},

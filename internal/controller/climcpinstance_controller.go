@@ -84,18 +84,28 @@ func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Error(applyErr, "apply children")
 	}
 
+	pool, poolErr := r.reconcilePool(ctx, inst, applyErr == nil)
+	if poolErr != nil {
+		logger.Error(poolErr, "reconcile warm pool")
+	}
+
 	idleResult, idleErr := r.idleResult(ctx, inst)
 	if idleErr != nil {
 		return ctrl.Result{}, idleErr
 	}
 
-	if err := r.syncStatus(ctx, inst, hmac, applyErr); err != nil {
+	reconcileErr := applyErr
+	if reconcileErr == nil {
+		reconcileErr = poolErr
+	}
+	orig := inst.DeepCopy()
+	if err := r.syncStatus(ctx, inst, hmac, applyErr, pool); err != nil {
 		return ctrl.Result{}, err
 	}
-	if applyErr != nil {
-		return ctrl.Result{}, applyErr
+	if reconcileErr != nil {
+		return ctrl.Result{}, reconcileErr
 	}
-	return idleResult, nil
+	return ctrl.Result{RequeueAfter: mergeRequeueAfter(idleResult.RequeueAfter, poolRequeueAfter(orig, pool, time.Now().UTC()))}, nil
 }
 
 func (r *CliMcpInstanceReconciler) finalize(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (ctrl.Result, error) {
@@ -179,13 +189,33 @@ func secretsPresent(secrets []corev1.Secret) bool {
 	return len(secrets) > 0
 }
 
-func (r *CliMcpInstanceReconciler) syncStatus(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr error) error {
+func (r *CliMcpInstanceReconciler) syncStatus(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr error, pool poolSnapshot) error {
 	orig := inst.DeepCopy()
-	inst.Status.WarmPoolDesired = inst.Spec.Sandbox.WarmPoolSize
-	inst.Status.WarmPoolReady = 0
+	inst.Status.WarmPoolDesired = pool.desired
+	inst.Status.WarmPoolReady = pool.ready
 	inst.Status.ResolvedSandboxImage = r.resolvedSandboxImage(inst.Spec.Sandbox)
 
-	ready, reason, message := r.readyGate(ctx, inst, hmac, applyErr)
+	poolFull := pool.desired == 0 || pool.ready >= pool.desired
+	warmStatus := metav1.ConditionFalse
+	warmReason := climcpv1alpha1.ReasonWarmPoolNotReady
+	warmMsg := fmt.Sprintf("warm pool %d/%d", pool.ready, pool.desired)
+	if pool.unhealthy {
+		warmReason = climcpv1alpha1.ReasonWarmPoolUnhealthy
+		warmMsg = pool.unhealthyMsg
+	} else if poolFull {
+		warmStatus = metav1.ConditionTrue
+		warmReason = climcpv1alpha1.ReasonReady
+		warmMsg = "warm pool is ready"
+	}
+	meta.SetStatusCondition(&inst.Status.Conditions, metav1.Condition{
+		Type:               climcpv1alpha1.ConditionWarmPoolReady,
+		Status:             warmStatus,
+		Reason:             warmReason,
+		Message:            warmMsg,
+		ObservedGeneration: inst.Generation,
+	})
+
+	ready, reason, message := r.readyGate(ctx, orig, inst, hmac, applyErr, pool)
 	status := metav1.ConditionFalse
 	if ready {
 		status = metav1.ConditionTrue
@@ -207,7 +237,7 @@ func (r *CliMcpInstanceReconciler) syncStatus(ctx context.Context, inst *climcpv
 	return nil
 }
 
-func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr error) (bool, string, string) {
+func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, orig, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr error, pool poolSnapshot) (bool, string, string) {
 	if applyErr != nil {
 		return false, climcpv1alpha1.ReasonReconciling, applyErr.Error()
 	}
@@ -230,7 +260,7 @@ func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, inst *climcpv1
 	if !deploymentAvailable(deploy) {
 		return false, climcpv1alpha1.ReasonDeploymentUnavailable, "MCP Deployment is not Available"
 	}
-	return true, climcpv1alpha1.ReasonReady, "instance is ready"
+	return poolReadyGate(orig, pool, time.Now().UTC())
 }
 
 func (r *CliMcpInstanceReconciler) missingRequiredSecrets(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret) (bool, string) {

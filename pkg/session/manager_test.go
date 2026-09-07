@@ -376,6 +376,37 @@ func TestGetOrCreatePod(t *testing.T) {
 		require.NoError(t, secretErr)
 	})
 
+	t.Run("rediscovers UUID pool pod after failed claim", func(t *testing.T) {
+		sessionID := "inv-rediscover"
+		poolPod := readyPod(sessionID, "10.0.0.55", time.Now().Add(-time.Minute))
+		poolPod.Name = "cli-mcp-sandbox-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+		client := fake.NewSimpleClientset()
+		lists := 0
+		client.PrependReactor("list", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			lists++
+			if lists < 3 {
+				return true, &corev1.PodList{}, nil
+			}
+			return true, &corev1.PodList{Items: []corev1.Pod{*poolPod.DeepCopy()}}, nil
+		})
+		client.PrependReactor("create", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			t.Fatal("must not create on-demand pod after rediscover")
+			return true, nil, fmt.Errorf("unexpected create")
+		})
+		mgr := newTestManagerWithClient(t, client)
+
+		ip, err := mgr.GetOrCreatePod(t.Context(), sessionID)
+
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.55", ip)
+		assert.GreaterOrEqual(t, lists, 3)
+		cachedIP, cachedName, ok := mgr.cache.Get(sessionID)
+		assert.True(t, ok)
+		assert.Equal(t, "10.0.0.55", cachedIP)
+		assert.Equal(t, poolPod.Name, cachedName)
+	})
+
 	t.Run("rediscovers when create returns AlreadyExists", func(t *testing.T) {
 		// given
 		sessionID := "inv-exists"
@@ -418,6 +449,104 @@ func markPodReady(mgr *SessionManager, sessionID, ip string) error {
 		return err
 	}
 	return fmt.Errorf("pod %s not found before deadline", podNamePrefix+sessionID)
+}
+
+func TestWaitAndCacheClaim(t *testing.T) {
+	t.Run("rediscovers sibling and does not delete the auth Secret", func(t *testing.T) {
+		sessionID := "sess-wait-dedupe"
+		sibling := readyPod(sessionID, "10.0.0.21", time.Now().Add(-time.Minute))
+		sibling.Name = "cli-mcp-sandbox-older-uuid"
+		client := fake.NewSimpleClientset(sibling.DeepCopy())
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		ip, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, "missing-claimed", "10.0.0.99")
+
+		require.NoError(t, waitErr)
+		assert.Equal(t, "10.0.0.21", ip)
+		cachedIP, cachedName, ok := mgr.cache.Get(sessionID)
+		assert.True(t, ok)
+		assert.Equal(t, "10.0.0.21", cachedIP)
+		assert.Equal(t, sibling.Name, cachedName)
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		require.NoError(t, secretErr)
+	})
+
+	t.Run("excludes the claimed pod and does not wait for a pending sibling", func(t *testing.T) {
+		sessionID := "sess-wait-exclude"
+		claimedName := "claimed-pending"
+		claimed := readyPod(sessionID, "", time.Now())
+		claimed.Name = claimedName
+		claimed.Status.Phase = corev1.PodPending
+		claimed.Status.PodIP = ""
+		claimed.Status.Conditions = nil
+
+		sibling := readyPod(sessionID, "", time.Now().Add(-time.Minute))
+		sibling.Name = "cli-mcp-sandbox-older-uuid"
+		sibling.Status.Phase = corev1.PodPending
+		sibling.Status.PodIP = ""
+		sibling.Status.Conditions = nil
+
+		client := fake.NewSimpleClientset(claimed.DeepCopy(), sibling.DeepCopy())
+		client.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			get, ok := action.(k8stesting.GetAction)
+			if !ok {
+				return false, nil, nil
+			}
+			if get.GetName() != claimedName {
+				return true, nil, fmt.Errorf("must not waitForReady on %s", get.GetName())
+			}
+			return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, claimedName)
+		})
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		start := time.Now()
+		_, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, claimedName, "10.0.0.99")
+
+		require.Error(t, waitErr)
+		assert.Contains(t, waitErr.Error(), "claimed pod not ready")
+		assert.Less(t, time.Since(start), time.Second, "must not waitForReady on the claimed or sibling pod")
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		require.NoError(t, secretErr, "pending sibling must keep the auth Secret")
+	})
+
+	t.Run("does not delete the auth Secret when sibling list fails", func(t *testing.T) {
+		sessionID := "sess-wait-list-err"
+		client := fake.NewSimpleClientset()
+		client.PrependReactor("list", "pods", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, fmt.Errorf("list assigned pods failed")
+		})
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		_, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, "missing-claimed", "10.0.0.99")
+
+		require.Error(t, waitErr)
+		assert.Contains(t, waitErr.Error(), "list assigned pods")
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		require.NoError(t, secretErr, "list error must not delete the auth Secret")
+	})
+
+	t.Run("cleans up the claimed pod when wait fails and no sibling exists", func(t *testing.T) {
+		sessionID := "sess-wait-cleanup"
+		client := fake.NewSimpleClientset()
+		_, err := client.CoreV1().Secrets(testNamespace).Create(t.Context(), buildAuthSecret(testNamespace, testInstance, sessionID, "tok"), metav1.CreateOptions{})
+		require.NoError(t, err)
+		mgr := newTestManagerWithClient(t, client)
+
+		_, waitErr := mgr.waitAndCacheClaim(t.Context(), sessionID, "missing-claimed", "10.0.0.99")
+
+		require.Error(t, waitErr)
+		assert.Contains(t, waitErr.Error(), "claimed pod not ready")
+		_, _, ok := mgr.cache.Get(sessionID)
+		assert.False(t, ok)
+		_, secretErr := client.CoreV1().Secrets(testNamespace).Get(t.Context(), AuthSecretName(sessionID), metav1.GetOptions{})
+		assert.True(t, apierrors.IsNotFound(secretErr), "auth Secret must be deleted when no sibling kept the session")
+	})
 }
 
 func TestBuildPodSpec(t *testing.T) {

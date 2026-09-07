@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
@@ -202,11 +203,19 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonSecretKeysInvalid))
 	})
 
-	It("GCs idle assigned sessions and requeues remaining", func() {
+	It("GCs idle assigned sessions, skips unassigned pool pods, and requeues remaining", func() {
 		createAdminSecrets(ctx, ns.Name)
-		createInstance(ctx, nn)
+		createInstanceWithPool(ctx, nn, 1)
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		Expect(err).NotTo(HaveOccurred())
+
+		poolPods := listUnassignedSandbox(ctx, ns.Name)
+		Expect(poolPods).To(HaveLen(1))
+		poolName := poolPods[0].Name
+		staleActivity := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+		poolPods[0].Annotations[session.AnnotationLastActivity] = staleActivity
+		poolPods[0].Annotations[session.AnnotationCreatedAt] = staleActivity
+		Expect(k8sClient.Update(ctx, &poolPods[0])).To(Succeed())
 
 		now := time.Now().UTC()
 		idle := sandboxPodObject(ns.Name, "idle-pod", "idle-sess", now.Add(-time.Hour), now.Add(-time.Hour))
@@ -215,9 +224,6 @@ var _ = Describe("CliMcpInstance Controller", func() {
 
 		fresh := sandboxPodObject(ns.Name, "fresh-pod", "fresh-sess", now, now)
 		Expect(k8sClient.Create(ctx, fresh)).To(Succeed())
-		unassigned := sandboxPodObject(ns.Name, "warm-pod", "", now.Add(-time.Hour), now.Add(-time.Hour))
-		delete(unassigned.Labels, session.LabelSessionID)
-		Expect(k8sClient.Create(ctx, unassigned)).To(Succeed())
 
 		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		Expect(err).NotTo(HaveOccurred())
@@ -226,7 +232,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "idle-pod", Namespace: ns.Name}, &corev1.Pod{}))).To(BeTrue())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: session.AuthSecretName("idle-sess"), Namespace: ns.Name}, &corev1.Secret{}))).To(BeTrue())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "fresh-pod", Namespace: ns.Name}, &corev1.Pod{})).To(Succeed())
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "warm-pod", Namespace: ns.Name}, &corev1.Pod{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: poolName, Namespace: ns.Name}, &corev1.Pod{})).To(Succeed())
 	})
 
 	It("finalizer scales MCP to 0, waits for server pods, then deletes sandboxes", func() {
@@ -344,6 +350,361 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		}).Should(Succeed())
 	})
+
+	It("maintains warmPoolSize, skips claimed pods, and does not flap Ready", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstanceWithPool(ctx, nn, 2)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		gen := deploy.Generation
+
+		unassigned := listUnassignedSandbox(ctx, ns.Name)
+		Expect(unassigned).To(HaveLen(2))
+		for i := range unassigned {
+			Expect(unassigned[i].Labels).NotTo(HaveKey(session.LabelSessionID))
+			Expect(unassigned[i].Annotations[sandboxOverlayAnnotation]).NotTo(BeEmpty())
+			Expect(unassigned[i].OwnerReferences).NotTo(BeEmpty())
+			for _, env := range unassigned[i].Spec.Containers[0].Env {
+				Expect(env.Name).NotTo(Equal("SANDBOX_AUTH_TOKEN"))
+			}
+			markPodReady(ctx, &unassigned[i])
+		}
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			inst := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(inst.Status.WarmPoolDesired).To(Equal(int32(2)))
+			g.Expect(inst.Status.WarmPoolReady).To(Equal(int32(2)))
+			warm := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionWarmPoolReady)
+			g.Expect(warm).NotTo(BeNil())
+			g.Expect(warm.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		Expect(deploy.Generation).To(Equal(gen))
+
+		claimed := listUnassignedSandbox(ctx, ns.Name)[0]
+		claimed.Labels[session.LabelSessionID] = "claimed-sess"
+		Expect(k8sClient.Update(ctx, &claimed)).To(Succeed())
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeNumerically(">", 4*time.Minute))
+		Expect(result.RequeueAfter).To(BeNumerically("<=", poolReplenishDeadline))
+
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(inst.Status.WarmPoolReady).To(BeNumerically("<", inst.Status.WarmPoolDesired))
+		warm := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionWarmPoolReady)
+		Expect(warm).NotTo(BeNil())
+		Expect(warm.Status).To(Equal(metav1.ConditionFalse))
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: claimed.Name, Namespace: ns.Name}, &corev1.Pod{})).To(Succeed())
+		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(2))
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		Expect(deploy.Generation).To(Equal(gen))
+	})
+
+	It("trims surplus oldest first and leaves assigned pods on overlay hash change", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstanceWithPool(ctx, nn, 1)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		oldestName := listUnassignedSandbox(ctx, ns.Name)[0].Name
+
+		time.Sleep(time.Second)
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		inst.Spec.Sandbox.WarmPoolSize = 2
+		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(2))
+
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		inst.Spec.Sandbox.WarmPoolSize = 1
+		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		remaining := listUnassignedSandbox(ctx, ns.Name)
+		Expect(remaining).To(HaveLen(1))
+		Expect(remaining[0].Name).NotTo(Equal(oldestName))
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: oldestName, Namespace: ns.Name}, &corev1.Pod{}))).To(BeTrue())
+
+		extra := sandboxPodObject(ns.Name, "extra-unassigned", "", time.Now(), time.Now())
+		delete(extra.Labels, session.LabelSessionID)
+		Expect(k8sClient.Create(ctx, extra)).To(Succeed())
+
+		assigned := sandboxPodObject(ns.Name, "assigned-keep", "keep-sess", time.Now(), time.Now())
+		Expect(k8sClient.Create(ctx, assigned)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "extra-unassigned", Namespace: ns.Name}, &corev1.Pod{}))).To(BeTrue())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "assigned-keep", Namespace: ns.Name}, &corev1.Pod{})).To(Succeed())
+		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(1))
+
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		inst.Spec.Sandbox.Image = "example.com/cli-mcp-sandbox:other"
+		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
+
+		before := listUnassignedSandbox(ctx, ns.Name)
+		Expect(before).To(HaveLen(1))
+		oldName := before[0].Name
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: oldName, Namespace: ns.Name}, &corev1.Pod{}))).To(BeTrue())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "assigned-keep", Namespace: ns.Name}, &corev1.Pod{})).To(Succeed())
+		replaced := listUnassignedSandbox(ctx, ns.Name)
+		Expect(replaced).To(HaveLen(1))
+		Expect(replaced[0].Name).NotTo(Equal(oldName))
+		Expect(replaced[0].Spec.Containers[0].Image).To(Equal("example.com/cli-mcp-sandbox:other"))
+	})
+
+	It("clears Ready on overlay rebuild until the replacement pool is Ready", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstanceWithPool(ctx, nn, 1)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		unassigned := listUnassignedSandbox(ctx, ns.Name)
+		Expect(unassigned).To(HaveLen(1))
+		markPodReady(ctx, &unassigned[0])
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			inst := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		inst.Spec.Sandbox.Image = "example.com/cli-mcp-sandbox:rebuilt"
+		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			got := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
+			cond := meta.FindStatusCondition(got.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonWarmPoolNotReady))
+		}).Should(Succeed())
+
+		replaced := listUnassignedSandbox(ctx, ns.Name)
+		Expect(replaced).To(HaveLen(1))
+		Expect(replaced[0].Spec.Containers[0].Image).To(Equal("example.com/cli-mcp-sandbox:rebuilt"))
+		markPodReady(ctx, &replaced[0])
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			got := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
+			cond := meta.FindStatusCondition(got.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(got.Status.WarmPoolReady).To(Equal(int32(1)))
+		}).Should(Succeed())
+	})
+
+	It("replaces a Failed pool pod and clears Ready", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstanceWithPool(ctx, nn, 1)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		unassigned := listUnassignedSandbox(ctx, ns.Name)
+		Expect(unassigned).To(HaveLen(1))
+		markPodReady(ctx, &unassigned[0])
+		oldName := unassigned[0].Name
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			inst := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+
+		failed := &corev1.Pod{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: oldName, Namespace: ns.Name}, failed)).To(Succeed())
+		failed.Status.Phase = corev1.PodFailed
+		failed.Status.Conditions = []corev1.PodCondition{{
+			Type:   corev1.PodReady,
+			Status: corev1.ConditionFalse,
+		}}
+		Expect(k8sClient.Status().Update(ctx, failed)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonWarmPoolUnhealthy))
+		replaced := listUnassignedSandbox(ctx, ns.Name)
+		Expect(replaced).To(HaveLen(1))
+		Expect(replaced[0].Name).NotTo(Equal(oldName))
+	})
+
+	It("does not go Ready until the warm pool is full on first Ready", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstanceWithPool(ctx, nn, 2)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			inst := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonWarmPoolNotReady))
+		}).Should(Succeed())
+	})
+
+	It("does not go Ready until the pool is full after a size increase", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstanceWithPool(ctx, nn, 1)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		unassigned := listUnassignedSandbox(ctx, ns.Name)
+		Expect(unassigned).To(HaveLen(1))
+		markPodReady(ctx, &unassigned[0])
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			inst := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(inst.Status.WarmPoolDesired).To(Equal(int32(1)))
+		}).Should(Succeed())
+
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		inst.Spec.Sandbox.WarmPoolSize = 2
+		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			got := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
+			g.Expect(got.Status.WarmPoolDesired).To(Equal(int32(2)))
+			cond := meta.FindStatusCondition(got.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonWarmPoolNotReady))
+		}).Should(Succeed())
+		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(2))
+
+		for _, pod := range listUnassignedSandbox(ctx, ns.Name) {
+			p := pod
+			markPodReady(ctx, &p)
+		}
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			got := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
+			cond := meta.FindStatusCondition(got.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(got.Status.WarmPoolReady).To(Equal(int32(2)))
+		}).Should(Succeed())
+	})
+
+	It("replaces an ImagePullBackOff pool pod and clears Ready", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstanceWithPool(ctx, nn, 1)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		unassigned := listUnassignedSandbox(ctx, ns.Name)
+		Expect(unassigned).To(HaveLen(1))
+		markPodReady(ctx, &unassigned[0])
+		oldName := unassigned[0].Name
+
+		Eventually(func(g Gomega) {
+			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			inst := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+			cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+
+		backoff := &corev1.Pod{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: oldName, Namespace: ns.Name}, backoff)).To(Succeed())
+		backoff.Status.Phase = corev1.PodPending
+		backoff.Status.Conditions = []corev1.PodCondition{{
+			Type:   corev1.PodReady,
+			Status: corev1.ConditionFalse,
+		}}
+		backoff.Status.ContainerStatuses = []corev1.ContainerStatus{{
+			Name: "sandbox",
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+				Reason: session.WaitingImagePullBackOff,
+			}},
+		}}
+		Expect(k8sClient.Status().Update(ctx, backoff)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonWarmPoolUnhealthy))
+		replaced := listUnassignedSandbox(ctx, ns.Name)
+		Expect(replaced).To(HaveLen(1))
+		Expect(replaced[0].Name).NotTo(Equal(oldName))
+	})
 })
 
 func testImages() Images {
@@ -356,17 +717,52 @@ func testImages() Images {
 
 func createInstance(ctx context.Context, nn types.NamespacedName) {
 	GinkgoHelper()
+	createInstanceWithPool(ctx, nn, 0)
+}
+
+func createInstanceWithPool(ctx context.Context, nn types.NamespacedName, size int32) {
+	GinkgoHelper()
 	inst := &climcpv1alpha1.CliMcpInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
 		Spec: climcpv1alpha1.CliMcpInstanceSpec{
 			Replicas: 1,
 			Sandbox: climcpv1alpha1.SandboxSpec{
 				IdleTimeout:  metav1.Duration{Duration: 30 * time.Minute},
-				WarmPoolSize: 0,
+				WarmPoolSize: size,
 			},
 		},
 	}
 	Expect(k8sClient.Create(ctx, inst)).To(Succeed())
+}
+
+func listUnassignedSandbox(ctx context.Context, namespace string) []corev1.Pod {
+	GinkgoHelper()
+	var pods corev1.PodList
+	Expect(k8sClient.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels(sandboxLabels("oc")))).To(Succeed())
+	var out []corev1.Pod
+	for i := range pods.Items {
+		if _, assigned := pods.Items[i].Labels[session.LabelSessionID]; assigned {
+			continue
+		}
+		if pods.Items[i].DeletionTimestamp != nil {
+			continue
+		}
+		out = append(out, pods.Items[i])
+	}
+	return out
+}
+
+func markPodReady(ctx context.Context, pod *corev1.Pod) {
+	GinkgoHelper()
+	fresh := &corev1.Pod{}
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, fresh)).To(Succeed())
+	fresh.Status.Phase = corev1.PodRunning
+	fresh.Status.PodIP = "10.0.0.10"
+	fresh.Status.Conditions = []corev1.PodCondition{{
+		Type:   corev1.PodReady,
+		Status: corev1.ConditionTrue,
+	}}
+	Expect(k8sClient.Status().Update(ctx, fresh)).To(Succeed())
 }
 
 func createAdminSecrets(ctx context.Context, namespace string) {
