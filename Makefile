@@ -89,7 +89,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test-hack
-test-hack: ## Run Python unit tests for bundle CSV stamp/replace scripts.
+test-hack: ## Run Python unit tests for bundle stamp/replace and catalog FBC compose.
 	python3 -m unittest discover -s hack -p '*_test.py' -v
 
 .PHONY: test
@@ -369,12 +369,15 @@ bundle-build: ## Build the bundle image.
 bundle-push: ## Push the bundle image.
 	$(MAKE) container-push IMG=$(BUNDLE_IMG)
 
-.PHONY: catalog-build
-catalog-build: opm ## Build a file-based catalog image from BUNDLE_IMG (`opm render`).
+.PHONY: catalog-render
+catalog-render: opm ## Write FBC under catalog/ from BUNDLE_IMG (package + channel + bundle).
 	rm -rf catalog
 	mkdir -p catalog
-	$(OPM) render $(BUNDLE_IMG) -o yaml > catalog/cli-mcp-operator.yaml
+	$(OPM) render $(BUNDLE_IMG) -o yaml | python3 hack/compose-catalog.py - catalog/cli-mcp-operator.yaml --channel $(DEFAULT_CHANNEL)
 	$(OPM) validate catalog
+
+.PHONY: catalog-build
+catalog-build: catalog-render ## Build a file-based catalog image from BUNDLE_IMG.
 	$(CONTAINER_TOOL) build -f catalog.Dockerfile -t $(CATALOG_IMG) .
 
 .PHONY: catalog-push
