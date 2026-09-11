@@ -48,17 +48,27 @@ const (
 
 	openshiftServingCertAnnotation = "service.beta.openshift.io/serving-cert-secret-name"
 
-	appNameLabel      = "app.kubernetes.io/name"
-	appNameServer     = "cli-mcp-server"
-	childNamePrefix   = "cli-mcp-"
-	kubeconfigSuffix  = "-kubeconfig"
-	tlsSuffix         = "-tls"
-	hmacSuffix        = "-hmac"
-	sandboxNameSuffix = "-sandbox"
+	appNameLabel     = "app.kubernetes.io/name"
+	appNameServer    = "cli-mcp-server"
+	childNamePrefix  = "cli-mcp-"
+	serverSAPrefix   = "cli-mcp-server-"
+	sandboxSAPrefix  = "cli-mcp-sandbox-"
+	kubeconfigSuffix = "-kubeconfig"
+	tlsSuffix        = "-tls"
+	hmacSuffix       = "-hmac"
+
+	authDelegatorClusterRole = "system:auth-delegator"
+	authDelegatorCRBSuffix   = "-auth-delegator"
+
+	labelNamespace = "cli-mcp.redhat.com/namespace"
 )
 
 func childName(instance string) string {
-	return childNamePrefix + instance
+	return serverSAPrefix + instance
+}
+
+func mcpServerSAName(instance string) string {
+	return childName(instance)
 }
 
 func hmacSecretName(instance string) string {
@@ -66,7 +76,12 @@ func hmacSecretName(instance string) string {
 }
 
 func sandboxSAName(instance string) string {
-	return childNamePrefix + instance + sandboxNameSuffix
+	return sandboxSAPrefix + instance
+}
+
+// authDelegatorCRBName is cluster-unique: two namespaces can both have instance "oc".
+func authDelegatorCRBName(namespace, instance string) string {
+	return serverSAPrefix + namespace + "-" + instance + authDelegatorCRBSuffix
 }
 
 func kubeconfigSecretName(instance string) string {
@@ -79,6 +94,14 @@ func tlsSecretName(instance string) string {
 
 func instanceLabels(instance string) map[string]string {
 	return map[string]string{session.LabelInstance: instance}
+}
+
+func authDelegatorLabels(namespace, instance string) map[string]string {
+	return map[string]string{
+		session.LabelInstance: instance,
+		labelNamespace:        namespace,
+		appNameLabel:          appNameServer,
+	}
 }
 
 func serverLabels(instance string) map[string]string {

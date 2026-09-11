@@ -68,6 +68,9 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			_ = k8sClient.Update(ctx, inst)
 			_ = k8sClient.Delete(ctx, inst)
 		}
+		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
+			Name: authDelegatorCRBName(ns.Name, "oc"),
+		}})
 		_ = k8sClient.Delete(ctx, ns)
 	})
 
@@ -83,10 +86,18 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(secretKeyNonEmpty(hmac, hmacSecretKey)).To(BeTrue())
 		firstKey := string(hmac.Data[hmacSecretKey])
 
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerSAName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandboxSAName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, &corev1.Service{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandboxSAName("oc"), Namespace: ns.Name}, &networkingv1.NetworkPolicy{})).To(Succeed())
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName(ns.Name, "oc")}, crb)).To(Succeed())
+		Expect(crb.RoleRef.Name).To(Equal(authDelegatorClusterRole))
+		Expect(crb.Subjects).To(HaveLen(1))
+		Expect(crb.Subjects[0].Name).To(Equal(mcpServerSAName("oc")))
+		Expect(crb.Subjects[0].Namespace).To(Equal(ns.Name))
+		Expect(crb.OwnerReferences).To(BeEmpty())
 
 		role := &rbacv1.Role{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, role)).To(Succeed())
@@ -100,8 +111,14 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}
 		Expect(secretVerbs).To(ConsistOf("create", "delete"))
 
+		rb := &rbacv1.RoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, rb)).To(Succeed())
+		Expect(rb.Subjects).To(HaveLen(1))
+		Expect(rb.Subjects[0].Name).To(Equal(mcpServerSAName("oc")))
+
 		deploy := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		Expect(deploy.Spec.Template.Spec.ServiceAccountName).To(Equal(mcpServerSAName("oc")))
 		args := deploy.Spec.Template.Spec.Containers[0].Args
 		Expect(args).NotTo(ContainElement("--warm-pool-size"))
 		Expect(args).NotTo(ContainElement("--idle-timeout"))
@@ -275,6 +292,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		err = k8sClient.Get(ctx, nn, inst)
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName(ns.Name, "oc")}, &rbacv1.ClusterRoleBinding{}))).To(BeTrue())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: kubeconfigSecretName("oc"), Namespace: ns.Name}, &corev1.Secret{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: tlsSecretName("oc"), Namespace: ns.Name}, &corev1.Secret{})).To(Succeed())
 	})

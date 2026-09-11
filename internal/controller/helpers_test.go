@@ -31,13 +31,18 @@ import (
 
 func TestChildNames(t *testing.T) {
 	t.Parallel()
-	assert.Equal(t, "cli-mcp-oc", childName("oc"))
+	assert.Equal(t, "cli-mcp-server-oc", childName("oc"))
+	assert.Equal(t, childName("oc"), mcpServerSAName("oc"))
 	assert.Equal(t, "cli-mcp-oc-hmac", hmacSecretName("oc"))
-	assert.Equal(t, "cli-mcp-oc-sandbox", sandboxSAName("oc"))
+	assert.Equal(t, "cli-mcp-sandbox-oc", sandboxSAName("oc"))
+	assert.Equal(t, "cli-mcp-server-oc", mcpServerSAName("oc"))
 	assert.Equal(t, "cli-mcp-oc-kubeconfig", kubeconfigSecretName("oc"))
 	assert.Equal(t, "cli-mcp-oc-tls", tlsSecretName("oc"))
-	// Longest child: cli-mcp- + 44 + -kubeconfig = 63.
+	assert.Equal(t, "cli-mcp-server-cli-mcp-oc-auth-delegator", authDelegatorCRBName("cli-mcp", "oc"))
+	// Longest namespaced child: cli-mcp- + 44 + -kubeconfig = 63.
 	assert.Len(t, kubeconfigSecretName("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr"), 63)
+	assert.LessOrEqual(t, len(mcpServerSAName("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr")), 63)
+	assert.LessOrEqual(t, len(sandboxSAName("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr")), 63)
 }
 
 func TestInstanceFromAdminSecret(t *testing.T) {

@@ -26,7 +26,8 @@ CliMcpInstance CR        ───────────► reconciler
 admin Secrets (not children):           ├── HMAC Secret (generate-once)
   cli-mcp-<name>-kubeconfig             ├── MCP Deployment (kube-rbac-proxy + server)
   cli-mcp-<name>-tls (non-OpenShift)    ├── Service (ClusterIP)
-                                        ├── MCP SA + Role/RoleBinding (pods; secret create/delete)
+                                        ├── MCP server SA cli-mcp-server-<name> + Role/RoleBinding
+                                        ├── ClusterRoleBinding system:auth-delegator (no ownerRef)
                                         ├── sandbox SA (no RoleBindings, automount false)
                                         └── NetworkPolicy (sandbox :8090 from this MCP)
                                               │
@@ -95,11 +96,12 @@ Namespaced children of a CR `metadata.name=oc` in the CR’s namespace (`cli-mcp
 
 | Child | Role |
 |---|---|
-| Deployment `cli-mcp-oc` | kube-rbac-proxy `:8443` → MCP `127.0.0.1:8080`; N replicas |
-| Service `cli-mcp-oc` | ClusterIP `:8443`; OpenShift serving-cert annotation **when on OpenShift** (Q2, Q13) |
-| ServiceAccount `cli-mcp-oc` | MCP pod identity (in-cluster client for session objects) |
-| Role + RoleBinding | MCP SA: pods create/get/list/watch/update/patch/delete (claim, last-activity). Secrets **create/delete** only (session auth Secrets). No secret get/list/watch. |
-| ServiceAccount `cli-mcp-oc-sandbox` | Sandbox pods. No RoleBindings. Q12 |
+| Deployment `cli-mcp-server-oc` | kube-rbac-proxy `:8443` → MCP `127.0.0.1:8080`; N replicas |
+| Service `cli-mcp-server-oc` | ClusterIP `:8443`; OpenShift serving-cert annotation **when on OpenShift** (Q2, Q13) |
+| ServiceAccount `cli-mcp-server-oc` | MCP pod identity (kube-rbac-proxy TokenReview + in-cluster session objects). Not the CR/Deployment name. |
+| ClusterRoleBinding `cli-mcp-server-<ns>-oc-auth-delegator` | `system:auth-delegator` on the server SA. Operator-owned; no `ownerRef` (Q13). |
+| Role + RoleBinding | Server SA: pods create/get/list/watch/update/patch/delete (claim, last-activity). Secrets **create/delete** only (session auth Secrets). No secret get/list/watch. |
+| ServiceAccount `cli-mcp-sandbox-oc` | Sandbox pods. No RoleBindings. Q12 |
 | Secret `cli-mcp-oc-hmac` | MCP↔agent HMAC key (data key `key`). Generate-once; `ownerRef` → CR. Never overwrite if present. |
 | NetworkPolicy sandbox ingress | `:8090` from pods labeled this instance + `component=server` (not caller identity). Q11 |
 
@@ -109,13 +111,13 @@ TLS for kube-rbac-proxy: mount Secret `cli-mcp-<name>-tls`. On OpenShift the ope
 
 Investigation kubeconfig: admin creates Secret `cli-mcp-<name>-kubeconfig` (key `kubeconfig`). This phase it is mounted on sandbox pods. No spec field, no `ownerRef` (same as TLS). Proxy pass unmounts it from the sandbox and mounts it on the proxy.
 
-All operator-owned objects get `ownerRef` → the CR and instance labels. Pool pods the operator creates get `ownerRef`; MCP on-demand session pods do not.
+All operator-owned **namespaced** objects get `ownerRef` → the CR and instance labels. The auth-delegator ClusterRoleBinding does not (cluster-scoped; finalizer deletes it). Pool pods the operator creates get `ownerRef`; MCP on-demand session pods do not.
 
 **Not** created as CRs: session pods and per-session `cli-mcp-sandbox-auth-*` Secrets. MCP creates/claims them on the hot path. Operator keeps **unassigned** count equal to `warmPoolSize` (same pod spec as MCP): create on deficit, delete surplus immediately (oldest first; re-get and skip a pod that just gained `session-id`). Recreate unassigned pods when the desired sandbox spec/image/env/resources changes (hash), not on a timer. Terminating unassigned pods (including those just deleted for surplus/hash/unhealthy) occupy slots until they are gone so a reconcile does not create over them. Do not copy as-built 2× idle age-drain (that existed because MCP replicas overshot and `ReconcilePool` would not trim extras). Idle-GC **assigned** sessions via `last-activity` at 1× `idleTimeout` (Q5).
 
-**Not** created by the operator: CRD (OLM/kustomize), operator Deployment, cluster-scoped RBAC, investigation kubeconfig Secret, MCP client SA, TLS Secret on non-OpenShift, OpenShift SCCs / namespace PSA, extra Secrets referenced from `spec.sandbox.env`.
+**Not** created by the operator: CRD (OLM/kustomize), operator Deployment, MCP **client** ClusterRole/Binding (`/mcp`), investigation kubeconfig Secret, MCP client SA, TLS Secret on non-OpenShift, OpenShift SCCs / namespace PSA, extra Secrets referenced from `spec.sandbox.env`.
 
-Q13: kube-rbac-proxy sidecar is always part of the MCP Deployment. Image from `RELATED_IMAGE_KUBE_RBAC_PROXY` (OLM `relatedImages`; not an instance workload). `--allow-paths` must cover the mux: `/mcp`, `/metrics`, `/live`, `/health`, `/sessions`. Admin owns `system:auth-delegator` on the MCP SA, the client SA, and the `/mcp` ClusterRole/Binding (plus `/sessions` if that is a separate nonResource URL). Repo ships sample cluster RBAC for operator tests. Clients are not required to carry a special pod label; kube-rbac-proxy is the MCP front door (Q11).
+Q13: kube-rbac-proxy sidecar is always part of the MCP Deployment. Image from `RELATED_IMAGE_KUBE_RBAC_PROXY` (OLM `relatedImages`; not an instance workload). `--allow-paths` must cover the mux: `/mcp`, `/metrics`, `/live`, `/health`, `/sessions`. Operator owns the MCP **server** SA (`cli-mcp-server-<name>`) and its `system:auth-delegator` ClusterRoleBinding (cluster-unique name including namespace; delete in the instance finalizer — no `ownerRef` from the namespaced CR). Admin owns the client SA and the `/mcp` ClusterRole/Binding (plus `/sessions` if that is a separate nonResource URL). Repo ships sample **client** cluster RBAC for operator tests. Clients are not required to carry a special pod label; kube-rbac-proxy is the MCP front door (Q11).
 
 ### What the cluster admin applies
 
@@ -125,7 +127,7 @@ OLM: CatalogSource + OperatorGroup + Subscription
     CliMcpInstance CR
     investigation kubeconfig Secret `cli-mcp-<name>-kubeconfig` (key `kubeconfig`)
     TLS Secret `cli-mcp-<name>-tls` (generic Kubernetes only; OpenShift serving-cert)
-    cluster-scoped RBAC for kube-rbac-proxy / MCP client (Q5, Q13)
+    cluster-scoped MCP client RBAC (`/mcp`; Q5, Q13) — not auth-delegator
     OpenShift SCC / namespace PSA as needed (sandbox is non-root, drop ALL caps; Q2)
     if the namespace is default-deny ingress: allow clients → MCP Service :8443
       (operator does not create an MCP ingress NP; kube-rbac-proxy is the front door)
@@ -150,7 +152,7 @@ Flags the operator sets (existing + small additions):
 | `--idle-timeout`, `--warm-pool-size` | **not** passed in-cluster — `spec.sandbox` is operator-only (Q5, Q6, Q9). After Phase 3 they must **not** start MCP replenish or idle GC (no dual path). Keep the flags so old CLIs still parse if useful; they have no in-cluster effect. |
 | `--instance-name` | **new** — CR `metadata.name` (labels). Required; no default. |
 | `--kubeconfig-secret` | **new** — always `cli-mcp-<name>-kubeconfig` (not a spec field; not `--kubeconfig`). Required; no default. |
-| `--sandbox-service-account` | **new** — operator-owned `cli-mcp-<name>-sandbox` (not a spec field). Required; do **not** default to `cli-mcp-investigation-sa` (Q12). |
+| `--sandbox-service-account` | **new** — operator-owned `cli-mcp-sandbox-<name>` (not a spec field). Required; do **not** default to `cli-mcp-investigation-sa` (Q12). |
 | `--sandbox-cpu-request`, `--sandbox-cpu-limit`, `--sandbox-memory-request`, `--sandbox-memory-limit` | **new** — `spec.sandbox.resources`. Empty/omitted → DefaultConfig `100m`/`500m`/`128Mi`/`512Mi`. |
 | `--sandbox-image-pull-policy` | **new** — `spec.sandbox.imagePullPolicy`. |
 | `--sandbox-env` | **new** — JSON `[]corev1.EnvVar` (includes `valueFrom`). Local may omit. Overlay change updates these args and rolls MCP (Q9). Operator maps spec → `SandboxConfig` in-process for pool; MCP fills the same struct from flags. No overlay ConfigMap. |
@@ -181,7 +183,7 @@ Q8: CR `metadata.name` is the instance id. Labels **and** annotations live under
 - `cli-mcp.redhat.com/component=sandbox` \| `server` — replace as-built `component=cli-mcp-sandbox`.
 - `cli-mcp.redhat.com/session-id` on assigned sandbox pods and their auth Secrets.
 - Annotations `cli-mcp.redhat.com/created-at` and `cli-mcp.redhat.com/last-activity` (RFC3339). MCP still patches last-activity on `bash` **and on claim**. Operator idle GC **reads** them on reconcile; the Pod watch does **not** enqueue on those patches. Unassigned pool pods have created-at and **no** session-id (idle GC skips them). Claim refreshes last-activity so pool age is not treated as session idle.
-- Children named `cli-mcp-<CR name>` (SA `cli-mcp-<name>-sandbox`, Secret `cli-mcp-<name>-kubeconfig`). CEL: CR name must leave room for the longest child (`cli-mcp-` + name + `-kubeconfig` ≤ 63 → name ≤ 44). Sample name `oc` is fine.
+- Children named `cli-mcp-server-<CR name>` (Deployment, Service, Role, RoleBinding, server SA). Sandbox SA/NP `cli-mcp-sandbox-<name>`. Admin Secret `cli-mcp-<name>-kubeconfig`. ClusterRoleBinding `cli-mcp-server-<namespace>-<name>-auth-delegator`. CEL: CR name must leave room for the longest **namespaced** child (`cli-mcp-` + name + `-kubeconfig` ≤ 63 → name ≤ 44). Sample name `oc` is fine.
 - `app.kubernetes.io/name=cli-mcp-server` may stay on MCP pods as a secondary label; sandbox NP selectors use instance/component labels above.
 
 Pool/claim/GC selectors are **component + instance**, plus `!session-id` for unassigned. As-built selectors are component-only and would mix two CRs in one namespace.
@@ -190,7 +192,7 @@ Pool/claim/GC selectors are **component + instance**, plus `!session-id` for una
 
 Delete CR destroys the instance. Rolling the MCP Deployment does not.
 
-Q10: **finalizer** `cli-mcp.redhat.com/finalizer` on `CliMcpInstance`. On delete, do not re-ensure MCP replicas. Scale the MCP Deployment to 0, wait until this instance’s `component=server` pods are gone, then list instance-labeled sandbox pods and session Secrets, delete them, wait until gone, then remove the finalizer (name stays taken until then). **`ownerRef` → CR** on operator-created children (MCP Deployment, Service, NPs, SAs, Role/RB, HMAC Secret, pool pods). After the finalizer drops, Kubernetes GCs these — do not wait for them in the finalizer. MCP does not set `ownerRef` on on-demand session pods. Never `ownerRef` session pods to the MCP Deployment. Do not delete the admin kubeconfig or TLS Secrets.
+Q10: **finalizer** `cli-mcp.redhat.com/finalizer` on `CliMcpInstance`. On delete, do not re-ensure MCP replicas. Scale the MCP Deployment to 0, wait until this instance’s `component=server` pods are gone, **delete the auth-delegator ClusterRoleBinding**, then list instance-labeled sandbox pods and session Secrets, delete them, wait until gone, then remove the finalizer (name stays taken until then). **`ownerRef` → CR** on operator-created **namespaced** children (MCP Deployment, Service, NPs, SAs, Role/RB, HMAC Secret, pool pods). After the finalizer drops, Kubernetes GCs these — do not wait for them in the finalizer. Do **not** `ownerRef` the cluster-scoped auth-delegator CRB (namespaced CR cannot own it). MCP does not set `ownerRef` on on-demand session pods. Never `ownerRef` session pods to the MCP Deployment. Do not delete the admin kubeconfig or TLS Secrets.
 
 ### NetworkPolicy this phase (no proxy)
 
@@ -204,7 +206,7 @@ Q11: operator creates the sandbox ingress NP only. No MCP ingress NP, no egress 
 
 ### Sandbox identity this phase
 
-Q12: operator creates a dedicated sandbox SA (`cli-mcp-<name>-sandbox`) with **no RoleBindings**. MCP sets that SA on sandbox pods and `automountServiceAccountToken: false`. The admin-provided investigation kubeconfig Secret **stays mounted** so `oc` works when testing the operator before the proxy exists.
+Q12: operator creates a dedicated sandbox SA (`cli-mcp-sandbox-<name>`) with **no RoleBindings**. MCP sets that SA on sandbox pods and `automountServiceAccountToken: false`. The admin-provided investigation kubeconfig Secret **stays mounted** so `oc` works when testing the operator before the proxy exists.
 
 Dummy kubeconfig is proxy work — without a proxy it would make `oc` fail and block operator tests. The investigation SA is **not** the sandbox pod identity (that name would imply the pod *is* the investigation subject; accidental automount would project a useful host-cluster token).
 
@@ -502,7 +504,7 @@ Depends on Phase 4 (instance exists; builder and idle GC already shipped). This 
 
 ### Phase 6 — First-party catalog consume (test/validation) — **no PR in this repo**
 
-Other repo / GitOps: CatalogSource + OperatorGroup + Subscription + one `CliMcpInstance` + `cli-mcp-<name>-kubeconfig` + TLS (non-OpenShift) + cluster RBAC (+ SCC/PSA as needed). After Phase 4 at the earliest (pool 0, idle GC on); Phase 5 if that environment wants a warm pool.
+Other repo / GitOps: CatalogSource + OperatorGroup + Subscription + one `CliMcpInstance` + `cli-mcp-<name>-kubeconfig` + TLS (non-OpenShift) + MCP **client** cluster RBAC (+ SCC/PSA as needed). Auth-delegator is operator-owned. After Phase 4 at the earliest (pool 0, idle GC on); Phase 5 if that environment wants a warm pool.
 
 This path is **test/validation only** (dev cluster, kind, a non-prod overlay). Verify `bash` creates a sandbox and other pods cannot hit `:8090`. **Do not** wire TARSy or any production/stage MCP client — sandbox still mounts the real kubeconfig and egress is unrestricted. First-party production/stage client wiring waits until proxy children and sandbox egress lock exist and pass the isolation checks in the proxy HOW. That is a **later implementation plan**, not Phase 7’s doc rewrite.
 

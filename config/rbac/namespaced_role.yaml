@@ -1,5 +1,6 @@
 # Namespaced manager verbs for instance children and the secret trust boundary.
-# Do not add these rules to ClusterRole manager-role.
+# Do not add these namespaced rules to ClusterRole manager-role.
+# Cluster-scoped children (ClusterRoleBindings) belong on manager-role.
 #
 # OLM creates CSV `permissions` as a Role in the operator namespace, then copies
 # that Role/RoleBinding into OperatorGroup targetNamespaces (SingleNamespace).

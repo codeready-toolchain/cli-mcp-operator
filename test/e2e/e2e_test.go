@@ -81,6 +81,11 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
+		By("deleting the instance auth-delegator ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding",
+			"cli-mcp-server-"+namespace+"-oc-auth-delegator", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
@@ -288,11 +293,13 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(func(g Gomega) {
 				for _, args := range [][]string{
 					{"get", "secret", "cli-mcp-oc-hmac", "-n", namespace},
-					{"get", "deploy", "cli-mcp-oc", "-n", namespace},
-					{"get", "svc", "cli-mcp-oc", "-n", namespace},
-					{"get", "sa", "cli-mcp-oc-sandbox", "-n", namespace},
-					{"get", "networkpolicy", "cli-mcp-oc-sandbox", "-n", namespace},
-					{"get", "role", "cli-mcp-oc", "-n", namespace},
+					{"get", "deploy", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "svc", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "sa", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "sa", "cli-mcp-sandbox-oc", "-n", namespace},
+					{"get", "networkpolicy", "cli-mcp-sandbox-oc", "-n", namespace},
+					{"get", "role", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "clusterrolebinding", "cli-mcp-server-" + namespace + "-oc-auth-delegator"},
 				} {
 					c := exec.Command("kubectl", args...)
 					_, err := utils.Run(c)

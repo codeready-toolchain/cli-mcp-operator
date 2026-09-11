@@ -102,8 +102,8 @@ Infrastructure (Deployment, Service, NPs) is rare and must reconverge. Session *
 
 | Owner | Objects / jobs |
 |---|---|
-| **Admin / OLM** | CRD, operator Deployment/SA/RBAC, `CliMcpInstance` CR, investigation kubeconfig Secret `cli-mcp-<name>-kubeconfig`, TLS Secret `cli-mcp-<name>-tls` on generic Kubernetes, cluster-scoped RBAC (`system:auth-delegator`, MCP client `/mcp` access), OpenShift SCC / PSA as needed |
-| **Operator** | MCP Deployment+Service, MCP SA, Role/RoleBinding (pods + secret create/delete), sandbox SA (Q12), NetworkPolicies (Q11), serving-cert annotation when on OpenShift, HMAC generate-once. **manager-role** namespaced secrets (HMAC, Ready, idle GC/finalizer) — OperatorGroup target namespace is the **secret trust boundary**. Warm pool, idle GC, teardown (Q10). Later: proxy children. |
+| **Admin / OLM** | CRD, operator Deployment/SA/RBAC, `CliMcpInstance` CR, investigation kubeconfig Secret `cli-mcp-<name>-kubeconfig`, TLS Secret `cli-mcp-<name>-tls` on generic Kubernetes, MCP **client** cluster RBAC (`/mcp` ClusterRole/Binding), OpenShift SCC / PSA as needed |
+| **Operator** | MCP Deployment+Service, MCP **server** SA (`cli-mcp-server-<name>`), `system:auth-delegator` ClusterRoleBinding for that SA (no ownerRef; finalizer deletes), Role/RoleBinding (pods + secret create/delete), sandbox SA `cli-mcp-sandbox-<name>` (Q12), NetworkPolicies (Q11), serving-cert annotation when on OpenShift, HMAC generate-once. **manager-role** includes ClusterRoleBindings plus namespaced secrets (HMAC, Ready, idle GC/finalizer) — OperatorGroup target namespace is the **secret trust boundary**. Warm pool, idle GC, teardown (Q10). Later: proxy children. |
 | **MCP** | On `bash`: cache → discover → **always claim** a warm pod if one exists, else **create** on demand → wait Ready → HMAC `/exec`. Per-session auth Secret **create/delete only** (HMAC from file mount; no secret get/list/watch). `DELETE /sessions/{id}` deletes that session’s pod+secret. Does **not** replenish the pool or run idle GC. Claim is **not** gated on `--warm-pool-size` (Q9). |
 
 No `Sandbox` / session CRD. Pool pods are ordinary Pods (no session-id). Claim stays a label patch (first writer wins). On-demand create stays in the MCP so an empty pool does not wait on the next operator reconcile for the first command.
@@ -201,8 +201,8 @@ Delete CR must destroy that instance (including sandbox pods). Rolling the MCP D
 
 ### Option A: Finalizer quiesces MCP, then waits until session pods/secrets are gone; operator children keep `ownerRef` → CR
 
-- **Finalizer:** while `deletionTimestamp` is set, do **not** re-ensure MCP `replicas`. Scale the MCP Deployment to 0, **wait until this instance’s `component=server` pods are gone**, then list instance-labeled sandbox pods and session Secrets, delete, **wait until gone**, then remove the finalizer. The CR name stays taken until session cleanup finishes.
-- **`ownerRef` → CR:** MCP Deployment, Service, NPs, SAs, Role/RoleBinding, HMAC Secret, warm-pool pods. After the finalizer drops, Kubernetes GCs these. Do not wait for those objects in the finalizer.
+- **Finalizer:** while `deletionTimestamp` is set, do **not** re-ensure MCP `replicas`. Scale the MCP Deployment to 0, **wait until this instance’s `component=server` pods are gone**, **delete the auth-delegator ClusterRoleBinding**, then list instance-labeled sandbox pods and session Secrets, delete, **wait until gone**, then remove the finalizer. The CR name stays taken until session cleanup finishes.
+- **`ownerRef` → CR:** MCP Deployment, Service, NPs, SAs, Role/RoleBinding, HMAC Secret, warm-pool pods. After the finalizer drops, Kubernetes GCs these. Do not wait for those objects in the finalizer. Do **not** `ownerRef` the cluster-scoped auth-delegator CRB.
 - **MCP** does not set `ownerRef` on on-demand session pods and does not get the CR. Idle GC (Q5) is the same label list in steady state.
 
 - **Pro:** Name reuse cannot overlap Terminating session pods. MCP is not still creating sessions while the finalizer waits. MCP Deployment rollout does not kill sessions. Standard `ownerRef` for operator children. MCP stays flag-only (Q9).
@@ -237,7 +237,7 @@ Dummy kubeconfig without a proxy makes `oc` fail and blocks that testing. Keepin
 
 ### Option B: Dedicated sandbox SA + `automountServiceAccountToken: false` now; still mount the real kubeconfig
 
-- Operator creates `cli-mcp-<name>-sandbox` with **no RoleBindings** (OpenShift needs an SA; this is the proxy-ready identity).
+- Operator creates `cli-mcp-sandbox-<name>` with **no RoleBindings** (OpenShift needs an SA; this is the proxy-ready identity).
 - MCP sets that SA on sandbox pods and `automountServiceAccountToken: false`.
 - Admin-provided investigation kubeconfig Secret stays mounted so `oc` works in tests.
 - Proxy pass later swaps the mount for dummy kubeconfig + `HTTPS_PROXY`; SA and automount already match.
@@ -253,18 +253,18 @@ _Considered and rejected: keep investigation SA and default automount (no produc
 
 ## Q13: Who owns MCP client authentication (kube-rbac-proxy extras)?
 
-In-cluster MCP is typically: kube-rbac-proxy sidecar, TLS on the Service, `system:auth-delegator` on the MCP SA, a **client** SA + token, and RBAC allowing that client to call `/mcp`. The MCP client uses that token. Loopback-only bind in `cmd/server` exists for this sidecar.
+In-cluster MCP is typically: kube-rbac-proxy sidecar, TLS on the Service, `system:auth-delegator` on the MCP **server** SA, a **client** SA + token, and RBAC allowing that client to call `/mcp`. The MCP client uses that token. Loopback-only bind in `cmd/server` exists for this sidecar.
 
-### Option A: Operator owns sidecar + Service TLS (serving-cert when on OpenShift); admin owns cluster-scoped auth-delegator, client SA, `/mcp` ClusterRole/Binding
+### Option A: Operator owns sidecar, Service TLS, MCP server SA, and auth-delegator; admin owns client SA and `/mcp` ClusterRole/Binding
 
-Operator always injects kube-rbac-proxy (not optional). Admin (or `config/samples` in tests) creates the client SA and points the MCP client at it.
+Operator always injects kube-rbac-proxy (not optional) and creates `cli-mcp-server-<name>` plus a cluster-unique `system:auth-delegator` ClusterRoleBinding for it. Admin (or `config/samples` in tests) creates the **client** SA and points the MCP client at it.
 
-- **Pro:** Operator stays mostly namespaced. ClusterRole for `/mcp` is a cluster API grant — belongs to the admin. Sidecar is an implementation detail of the MCP Deployment the operator already owns.
-- **Con:** Standing up an instance is “CR + a few cluster RBAC YAMLs,” not CR-only.
+- **Pro:** The SA kube-rbac-proxy runs as is an operator child; its cluster binding stays with the same owner so GitOps cannot bind a name the operator does not create. `/mcp` ClusterRole remains a cluster API grant for the admin.
+- **Con:** Operator `manager-role` must include ClusterRoleBindings. The CRB cannot `ownerRef` the namespaced CR; the instance finalizer must delete it.
 
-**Decision:** Option A — kube-rbac-proxy is a fixed part of the MCP Deployment (`RELATED_IMAGE_KUBE_RBAC_PROXY`). Cluster-scoped client auth stays with the admin; ship sample YAMLs so operator tests can call `/mcp`. `--allow-paths`: `/mcp`, `/metrics`, `/live`, `/health`, `/sessions`. TLS Secret `cli-mcp-<name>-tls`: serving-cert on OpenShift, admin-provided on generic Kubernetes.
+**Decision:** Option A (updated) — kube-rbac-proxy is a fixed part of the MCP Deployment (`RELATED_IMAGE_KUBE_RBAC_PROXY`). Operator owns the server SA and auth-delegator CRB. Cluster-scoped **client** auth stays with the admin; ship sample YAMLs so operator tests can call `/mcp`. `--allow-paths`: `/mcp`, `/metrics`, `/live`, `/health`, `/sessions`. TLS Secret `cli-mcp-<name>-tls`: serving-cert on OpenShift, admin-provided on generic Kubernetes.
 
-_Considered and rejected: operator creates auth-delegator, client SA, and `/mcp` ClusterRole (operator ClusterRole too wide; cluster-scoped GC on CR delete is awkward), no kube-rbac-proxy (no TLS + SA-token front door; breaks loopback-only bind)._
+_Considered and rejected: admin/GitOps owns auth-delegator while the operator creates the SA (easy to miss; GitOps bound `cli-mcp-oc`, which is the Deployment name not a dedicated server identity), operator also creates client SA and `/mcp` ClusterRole (cluster API grant belongs to the admin), no kube-rbac-proxy (no TLS + SA-token front door; breaks loopback-only bind)._
 
 ---
 
