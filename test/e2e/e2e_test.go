@@ -81,6 +81,11 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
+		By("deleting the instance auth-delegator ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding",
+			"cli-mcp-server-"+namespace+"-oc-auth-delegator", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
