@@ -76,10 +76,6 @@ var _ = Describe("CliMcpInstance Controller", func() {
 
 	It("applies children, generate-once HMAC, and goes Ready when admin secrets are valid", func() {
 		createAdminSecrets(ctx, ns.Name)
-		Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
-			Name:      legacyServerChildName("oc"),
-			Namespace: ns.Name,
-		}})).To(Succeed())
 		createInstance(ctx, nn)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
@@ -91,10 +87,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		firstKey := string(hmac.Data[hmacSecretKey])
 
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerSAName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
-		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: legacyServerChildName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{}))).To(BeTrue())
-		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: legacyServerChildName("oc") + "-server", Namespace: ns.Name}, &corev1.ServiceAccount{}))).To(BeTrue())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandboxSAName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
-		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: legacyServerChildName("oc") + "-sandbox", Namespace: ns.Name}, &corev1.ServiceAccount{}))).To(BeTrue())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, &corev1.Service{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandboxSAName("oc"), Namespace: ns.Name}, &networkingv1.NetworkPolicy{})).To(Succeed())
 

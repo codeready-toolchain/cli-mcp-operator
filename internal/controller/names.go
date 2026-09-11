@@ -71,10 +71,6 @@ func mcpServerSAName(instance string) string {
 	return childName(instance)
 }
 
-func legacyServerChildName(instance string) string {
-	return childNamePrefix + instance
-}
-
 func hmacSecretName(instance string) string {
 	return childNamePrefix + instance + hmacSuffix
 }

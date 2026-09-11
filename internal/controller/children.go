@@ -50,22 +50,13 @@ func (r *CliMcpInstanceReconciler) applyChildren(ctx context.Context, inst *clim
 	if err := r.applyAuthDelegator(ctx, inst); err != nil {
 		return err
 	}
-	if err := r.deleteLegacyMCPSA(ctx, inst); err != nil {
-		return err
-	}
 	if err := r.applyService(ctx, inst); err != nil {
 		return err
 	}
 	if err := r.applySandboxIngressNP(ctx, inst); err != nil {
 		return err
 	}
-	if err := r.deleteLegacySandbox(ctx, inst); err != nil {
-		return err
-	}
-	if err := r.applyDeployment(ctx, inst, hmac); err != nil {
-		return err
-	}
-	return r.deleteLegacyServerWorkload(ctx, inst)
+	return r.applyDeployment(ctx, inst, hmac)
 }
 
 func (r *CliMcpInstanceReconciler) applySandboxSA(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
@@ -189,69 +180,6 @@ func (r *CliMcpInstanceReconciler) deleteAuthDelegator(ctx context.Context, inst
 	}}
 	if err := r.Delete(ctx, crb); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete auth-delegator ClusterRoleBinding: %w", err)
-	}
-	return nil
-}
-
-// deleteLegacyMCPSA removes older MCP pod SAs: cli-mcp-<instance> (Deployment
-// name) and cli-mcp-<instance>-server. The current identity is
-// cli-mcp-server-<instance>.
-func (r *CliMcpInstanceReconciler) deleteLegacyMCPSA(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
-	want := mcpServerSAName(inst.Name)
-	for _, name := range []string{legacyServerChildName(inst.Name), legacyServerChildName(inst.Name) + "-server"} {
-		if name == want {
-			continue
-		}
-		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: inst.Namespace,
-		}}
-		if err := r.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("delete legacy MCP SA %s: %w", name, err)
-		}
-	}
-	return nil
-}
-
-func (r *CliMcpInstanceReconciler) deleteLegacySandbox(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
-	legacy := childNamePrefix + inst.Name + "-sandbox"
-	if legacy == sandboxSAName(inst.Name) {
-		return nil
-	}
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
-		Name:      legacy,
-		Namespace: inst.Namespace,
-	}}
-	if err := r.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete legacy sandbox SA: %w", err)
-	}
-	np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
-		Name:      legacy,
-		Namespace: inst.Namespace,
-	}}
-	if err := r.Delete(ctx, np); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete legacy sandbox NetworkPolicy: %w", err)
-	}
-	return nil
-}
-
-func (r *CliMcpInstanceReconciler) deleteLegacyServerWorkload(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
-	legacy := legacyServerChildName(inst.Name)
-	if legacy == childName(inst.Name) {
-		return nil
-	}
-	ns := inst.Namespace
-	if err := r.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete legacy Deployment %s: %w", legacy, err)
-	}
-	if err := r.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete legacy Service %s: %w", legacy, err)
-	}
-	if err := r.Delete(ctx, &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete legacy Role %s: %w", legacy, err)
-	}
-	if err := r.Delete(ctx, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete legacy RoleBinding %s: %w", legacy, err)
 	}
 	return nil
 }
