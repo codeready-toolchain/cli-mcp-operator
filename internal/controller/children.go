@@ -28,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -46,13 +47,25 @@ func (r *CliMcpInstanceReconciler) applyChildren(ctx context.Context, inst *clim
 	if err := r.applyMCPRoleBinding(ctx, inst); err != nil {
 		return err
 	}
+	if err := r.applyAuthDelegator(ctx, inst); err != nil {
+		return err
+	}
+	if err := r.deleteLegacyMCPSA(ctx, inst); err != nil {
+		return err
+	}
 	if err := r.applyService(ctx, inst); err != nil {
 		return err
 	}
 	if err := r.applySandboxIngressNP(ctx, inst); err != nil {
 		return err
 	}
-	return r.applyDeployment(ctx, inst, hmac)
+	if err := r.deleteLegacySandbox(ctx, inst); err != nil {
+		return err
+	}
+	if err := r.applyDeployment(ctx, inst, hmac); err != nil {
+		return err
+	}
+	return r.deleteLegacyServerWorkload(ctx, inst)
 }
 
 func (r *CliMcpInstanceReconciler) applySandboxSA(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
@@ -74,7 +87,7 @@ func (r *CliMcpInstanceReconciler) applySandboxSA(ctx context.Context, inst *cli
 
 func (r *CliMcpInstanceReconciler) applyMCPSA(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
-		Name:      childName(inst.Name),
+		Name:      mcpServerSAName(inst.Name),
 		Namespace: inst.Namespace,
 	}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
@@ -132,13 +145,113 @@ func (r *CliMcpInstanceReconciler) applyMCPRoleBinding(ctx context.Context, inst
 		}
 		rb.Subjects = []rbacv1.Subject{{
 			Kind:      rbacv1.ServiceAccountKind,
-			Name:      childName(inst.Name),
+			Name:      mcpServerSAName(inst.Name),
 			Namespace: inst.Namespace,
 		}}
 		return controllerutil.SetControllerReference(inst, rb, r.Scheme)
 	})
 	if err != nil {
 		return fmt.Errorf("apply MCP RoleBinding: %w", err)
+	}
+	return nil
+}
+
+// applyAuthDelegator binds the MCP server SA to system:auth-delegator so
+// kube-rbac-proxy can TokenReview / SubjectAccessReview. Cluster-scoped: no
+// ownerRef from the namespaced CR; the instance finalizer deletes this object.
+func (r *CliMcpInstanceReconciler) applyAuthDelegator(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	crb := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
+		Name: authDelegatorCRBName(inst.Namespace, inst.Name),
+	}}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, crb, func() error {
+		crb.Labels = authDelegatorLabels(inst.Namespace, inst.Name)
+		crb.RoleRef = rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     authDelegatorClusterRole,
+		}
+		crb.Subjects = []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      mcpServerSAName(inst.Name),
+			Namespace: inst.Namespace,
+		}}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("apply auth-delegator ClusterRoleBinding: %w", err)
+	}
+	return nil
+}
+
+func (r *CliMcpInstanceReconciler) deleteAuthDelegator(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	crb := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
+		Name: authDelegatorCRBName(inst.Namespace, inst.Name),
+	}}
+	if err := r.Delete(ctx, crb); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete auth-delegator ClusterRoleBinding: %w", err)
+	}
+	return nil
+}
+
+// deleteLegacyMCPSA removes older MCP pod SAs: cli-mcp-<instance> (Deployment
+// name) and cli-mcp-<instance>-server. The current identity is
+// cli-mcp-server-<instance>.
+func (r *CliMcpInstanceReconciler) deleteLegacyMCPSA(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	want := mcpServerSAName(inst.Name)
+	for _, name := range []string{legacyServerChildName(inst.Name), legacyServerChildName(inst.Name) + "-server"} {
+		if name == want {
+			continue
+		}
+		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: inst.Namespace,
+		}}
+		if err := r.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete legacy MCP SA %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (r *CliMcpInstanceReconciler) deleteLegacySandbox(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	legacy := childNamePrefix + inst.Name + "-sandbox"
+	if legacy == sandboxSAName(inst.Name) {
+		return nil
+	}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name:      legacy,
+		Namespace: inst.Namespace,
+	}}
+	if err := r.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete legacy sandbox SA: %w", err)
+	}
+	np := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{
+		Name:      legacy,
+		Namespace: inst.Namespace,
+	}}
+	if err := r.Delete(ctx, np); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete legacy sandbox NetworkPolicy: %w", err)
+	}
+	return nil
+}
+
+func (r *CliMcpInstanceReconciler) deleteLegacyServerWorkload(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	legacy := legacyServerChildName(inst.Name)
+	if legacy == childName(inst.Name) {
+		return nil
+	}
+	ns := inst.Namespace
+	if err := r.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete legacy Deployment %s: %w", legacy, err)
+	}
+	if err := r.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete legacy Service %s: %w", legacy, err)
+	}
+	if err := r.Delete(ctx, &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete legacy Role %s: %w", legacy, err)
+	}
+	if err := r.Delete(ctx, &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: legacy, Namespace: ns}}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete legacy RoleBinding %s: %w", legacy, err)
 	}
 	return nil
 }
@@ -295,7 +408,7 @@ func (r *CliMcpInstanceReconciler) mcpPodTemplate(inst *climcpv1alpha1.CliMcpIns
 			},
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: childName(inst.Name),
+			ServiceAccountName: mcpServerSAName(inst.Name),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: &runAsNonRoot,
 				SeccompProfile: &corev1.SeccompProfile{

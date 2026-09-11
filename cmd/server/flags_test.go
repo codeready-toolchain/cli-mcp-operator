@@ -15,7 +15,7 @@ func validRunConfig() runConfig {
 		namespace:             "cli-mcp",
 		instanceName:          "oc",
 		kubeconfigSecret:      "cli-mcp-oc-kubeconfig",
-		sandboxServiceAccount: "cli-mcp-oc-sandbox",
+		sandboxServiceAccount: "cli-mcp-sandbox-oc",
 	}
 }
 
@@ -138,7 +138,7 @@ func TestBuildSandboxConfig(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "oc", got.InstanceName)
 			assert.Equal(t, "cli-mcp", got.Namespace)
-			assert.Equal(t, "cli-mcp-oc-sandbox", got.ServiceAccountName)
+			assert.Equal(t, "cli-mcp-sandbox-oc", got.ServiceAccountName)
 			assert.Equal(t, "cli-mcp-oc-kubeconfig", got.KubeconfigSecret)
 			if tt.check != nil {
 				tt.check(t, got)

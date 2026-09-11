@@ -50,10 +50,11 @@ type CliMcpInstanceReconciler struct {
 
 // Namespaced instance-child and pods/secrets verbs are a Role in the
 // OperatorGroup target namespace (config/rbac/namespaced_role.yaml), not this
-// ClusterRole.
+// ClusterRole. ClusterRoleBindings are cluster-scoped, so they belong here.
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/finalizers,verbs=update
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
@@ -125,6 +126,10 @@ func (r *CliMcpInstanceReconciler) finalize(ctx context.Context, inst *climcpv1a
 	if stillPresent(serverPods.Items) {
 		logger.Info("waiting for MCP server pods to terminate")
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
+	if err := r.deleteAuthDelegator(ctx, inst); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if err := r.deleteInstanceSandboxes(ctx, inst); err != nil {
@@ -327,7 +332,7 @@ func (r *CliMcpInstanceReconciler) missingChildren(ctx context.Context, inst *cl
 		obj  client.Object
 		name string
 	}{
-		{&corev1.ServiceAccount{}, childName(inst.Name)},
+		{&corev1.ServiceAccount{}, mcpServerSAName(inst.Name)},
 		{&corev1.ServiceAccount{}, sandboxSAName(inst.Name)},
 		{&rbacv1.Role{}, childName(inst.Name)},
 		{&rbacv1.RoleBinding{}, childName(inst.Name)},
@@ -346,6 +351,13 @@ func (r *CliMcpInstanceReconciler) missingChildren(ctx context.Context, inst *cl
 		if err != nil {
 			return true, err.Error()
 		}
+	}
+	crbName := authDelegatorCRBName(inst.Namespace, inst.Name)
+	err := r.Get(ctx, types.NamespacedName{Name: crbName}, &rbacv1.ClusterRoleBinding{})
+	if apierrors.IsNotFound(err) {
+		missing = append(missing, crbName)
+	} else if err != nil {
+		return true, err.Error()
 	}
 	if len(missing) == 0 {
 		return false, ""

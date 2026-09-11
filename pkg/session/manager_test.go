@@ -30,7 +30,7 @@ import (
 const (
 	testNamespace = "cli-mcp"
 	testInstance  = "oc"
-	testSA        = "cli-mcp-oc-sandbox"
+	testSA        = "cli-mcp-sandbox-oc"
 	//nolint:gosec // G101: K8s Secret resource name, not a credential
 	testKubeSecret = "cli-mcp-oc-kubeconfig"
 )

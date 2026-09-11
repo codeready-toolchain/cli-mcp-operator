@@ -288,11 +288,13 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(func(g Gomega) {
 				for _, args := range [][]string{
 					{"get", "secret", "cli-mcp-oc-hmac", "-n", namespace},
-					{"get", "deploy", "cli-mcp-oc", "-n", namespace},
-					{"get", "svc", "cli-mcp-oc", "-n", namespace},
-					{"get", "sa", "cli-mcp-oc-sandbox", "-n", namespace},
-					{"get", "networkpolicy", "cli-mcp-oc-sandbox", "-n", namespace},
-					{"get", "role", "cli-mcp-oc", "-n", namespace},
+					{"get", "deploy", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "svc", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "sa", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "sa", "cli-mcp-sandbox-oc", "-n", namespace},
+					{"get", "networkpolicy", "cli-mcp-sandbox-oc", "-n", namespace},
+					{"get", "role", "cli-mcp-server-oc", "-n", namespace},
+					{"get", "clusterrolebinding", "cli-mcp-server-" + namespace + "-oc-auth-delegator"},
 				} {
 					c := exec.Command("kubectl", args...)
 					_, err := utils.Run(c)
