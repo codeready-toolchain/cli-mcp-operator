@@ -1,4 +1,4 @@
-# File-based catalog (FBC). Built by `make catalog-build` from `opm render`.
+# File-based catalog (FBC). Built by `make catalog-build` from `make catalog-render`.
 FROM quay.io/operator-framework/opm:v1.59.0
 
 ENTRYPOINT ["/bin/opm"]

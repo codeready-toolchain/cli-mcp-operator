@@ -121,16 +121,8 @@ jobs:
           tags: ${{ steps.build-bundle.outputs.tags }}
           registry: ${{ env.IMAGE_REGISTRY }}
 
-      - name: Install opm
-        run: make opm
-
       - name: Render catalog
-        run: |
-          BUNDLE_REF="${IMAGE_REGISTRY}/codeready-toolchain/cli-mcp-operator-bundle:${COMMIT_SHORT_SHA}"
-          rm -rf catalog
-          mkdir -p catalog
-          ./bin/opm render "${BUNDLE_REF}" -o yaml > catalog/cli-mcp-operator.yaml
-          ./bin/opm validate catalog
+        run: make catalog-render BUNDLE_IMG="${IMAGE_REGISTRY}/codeready-toolchain/cli-mcp-operator-bundle:${COMMIT_SHORT_SHA}"
 
       - name: Build catalog image
         id: build-catalog
