@@ -215,6 +215,7 @@ func main() {
 
 	if err := (&controller.CliMcpInstanceReconciler{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Scheme:      mgr.GetScheme(),
 		Images:      controller.ImagesFromEnv(),
 		OnOpenShift: onOpenShift,

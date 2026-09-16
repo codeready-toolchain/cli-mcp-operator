@@ -30,3 +30,22 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - cli-mcp-auth-delegator
+  resources:
+  - clusterrolebindings
+  verbs:
+  - create
+  - get
+  - patch
+  - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - system:auth-delegator
+  resources:
+  - clusterroles
+  verbs:
+  - bind

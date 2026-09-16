@@ -76,6 +76,25 @@ spec:
           - patch
           - update
         - apiGroups:
+          - rbac.authorization.k8s.io
+          resourceNames:
+          - cli-mcp-auth-delegator
+          resources:
+          - clusterrolebindings
+          verbs:
+          - create
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resourceNames:
+          - system:auth-delegator
+          resources:
+          - clusterroles
+          verbs:
+          - bind
+        - apiGroups:
           - authentication.k8s.io
           resources:
           - tokenreviews
@@ -205,6 +224,7 @@ spec:
           - secrets
           - services
           - serviceaccounts
+          - configmaps
           verbs:
           - create
           - delete

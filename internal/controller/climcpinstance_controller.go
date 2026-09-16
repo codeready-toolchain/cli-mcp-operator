@@ -43,6 +43,7 @@ import (
 // CliMcpInstanceReconciler reconciles a CliMcpInstance object.
 type CliMcpInstanceReconciler struct {
 	client.Client
+	APIReader   client.Reader
 	Scheme      *runtime.Scheme
 	Images      Images
 	OnOpenShift bool
@@ -50,10 +51,12 @@ type CliMcpInstanceReconciler struct {
 
 // Namespaced instance-child and pods/secrets verbs are a Role in the
 // OperatorGroup target namespace (config/rbac/namespaced_role.yaml), not this
-// ClusterRole.
+// ClusterRole. bind + named ClusterRoleBinding are clusterPermissions only.
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/finalizers,verbs=update
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames="system:auth-delegator",verbs=bind
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,resourceNames=cli-mcp-auth-delegator,verbs=get;create;update;patch
 
 func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
@@ -84,6 +87,11 @@ func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.Error(applyErr, "apply children")
 	}
 
+	crbErr := r.applyAuthDelegatorCRB(ctx)
+	if crbErr != nil {
+		logger.Error(crbErr, "apply auth-delegator ClusterRoleBinding")
+	}
+
 	pool, poolErr := r.reconcilePool(ctx, inst, applyErr == nil)
 	if poolErr != nil {
 		logger.Error(poolErr, "reconcile warm pool")
@@ -96,10 +104,13 @@ func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	reconcileErr := applyErr
 	if reconcileErr == nil {
+		reconcileErr = crbErr
+	}
+	if reconcileErr == nil {
 		reconcileErr = poolErr
 	}
 	orig := inst.DeepCopy()
-	if err := r.syncStatus(ctx, inst, hmac, applyErr, pool); err != nil {
+	if err := r.syncStatus(ctx, inst, hmac, applyErr, crbErr, pool); err != nil {
 		return ctrl.Result{}, err
 	}
 	if reconcileErr != nil {
@@ -113,6 +124,10 @@ func (r *CliMcpInstanceReconciler) finalize(ctx context.Context, inst *climcpv1a
 		return ctrl.Result{}, nil
 	}
 	logger := logf.FromContext(ctx)
+
+	if err := r.applyAuthDelegatorCRB(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	if err := r.scaleMCPToZero(ctx, inst); err != nil {
 		return ctrl.Result{}, err
@@ -189,11 +204,12 @@ func secretsPresent(secrets []corev1.Secret) bool {
 	return len(secrets) > 0
 }
 
-func (r *CliMcpInstanceReconciler) syncStatus(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr error, pool poolSnapshot) error {
+func (r *CliMcpInstanceReconciler) syncStatus(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr, crbErr error, pool poolSnapshot) error {
 	orig := inst.DeepCopy()
 	inst.Status.WarmPoolDesired = pool.desired
 	inst.Status.WarmPoolReady = pool.ready
 	inst.Status.ResolvedSandboxImage = r.resolvedSandboxImage(inst.Spec.Sandbox)
+	inst.Status.ClientServiceAccount = clientSAName(inst.Name)
 
 	poolFull := pool.desired == 0 || pool.ready >= pool.desired
 	warmStatus := metav1.ConditionFalse
@@ -215,7 +231,7 @@ func (r *CliMcpInstanceReconciler) syncStatus(ctx context.Context, inst *climcpv
 		ObservedGeneration: inst.Generation,
 	})
 
-	ready, reason, message := r.readyGate(ctx, orig, inst, hmac, applyErr, pool)
+	ready, reason, message := r.readyGate(ctx, orig, inst, hmac, applyErr, crbErr, pool)
 	status := metav1.ConditionFalse
 	if ready {
 		status = metav1.ConditionTrue
@@ -237,7 +253,10 @@ func (r *CliMcpInstanceReconciler) syncStatus(ctx context.Context, inst *climcpv
 	return nil
 }
 
-func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, orig, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr error, pool poolSnapshot) (bool, string, string) {
+func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, orig, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, applyErr, crbErr error, pool poolSnapshot) (bool, string, string) {
+	if crbErr != nil {
+		return false, climcpv1alpha1.ReasonChildrenNotReady, crbErr.Error()
+	}
 	if applyErr != nil {
 		return false, climcpv1alpha1.ReasonReconciling, applyErr.Error()
 	}
@@ -249,6 +268,9 @@ func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, orig, inst *cl
 		return false, climcpv1alpha1.ReasonSecretKeysInvalid, msg
 	}
 	if missing, msg := r.missingChildren(ctx, inst); missing {
+		return false, climcpv1alpha1.ReasonChildrenNotReady, msg
+	}
+	if missing, msg := r.authDelegatorNotReady(ctx, inst); missing {
 		return false, climcpv1alpha1.ReasonChildrenNotReady, msg
 	}
 
@@ -329,12 +351,16 @@ func (r *CliMcpInstanceReconciler) missingChildren(ctx context.Context, inst *cl
 	}{
 		{&corev1.ServiceAccount{}, childName(inst.Name)},
 		{&corev1.ServiceAccount{}, sandboxSAName(inst.Name)},
+		{&corev1.ServiceAccount{}, clientSAName(inst.Name)},
 		{&rbacv1.Role{}, childName(inst.Name)},
+		{&rbacv1.Role{}, clientSAName(inst.Name)},
 		{&rbacv1.RoleBinding{}, childName(inst.Name)},
+		{&rbacv1.RoleBinding{}, clientSAName(inst.Name)},
 		{&corev1.Service{}, childName(inst.Name)},
 		{&networkingv1.NetworkPolicy{}, sandboxSAName(inst.Name)},
 		{&appsv1.Deployment{}, childName(inst.Name)},
 		{&corev1.Secret{}, hmacSecretName(inst.Name)},
+		{&corev1.ConfigMap{}, krpConfigMapName(inst.Name)},
 	}
 	var missing []string
 	for _, c := range checks {
@@ -394,6 +420,7 @@ func (r *CliMcpInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&rbacv1.Role{}).
 		Owns(&rbacv1.RoleBinding{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&corev1.ConfigMap{}).
 		Watches(&corev1.Pod{}, enqueueSandboxPod(), builder.WithPredicates(sandboxPodPredicate{})).
 		Watches(&corev1.Secret{}, enqueueSecret()).
 		Named("climcpinstance").

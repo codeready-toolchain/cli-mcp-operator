@@ -122,6 +122,7 @@ Each session gets its own pod. That pod is the security boundary:
 - **Credentials** — investigation kubeconfig Secret mounted into the sandbox; dedicated sandbox SA with `automountServiceAccountToken: false`
 - **Network** — NetworkPolicy can restrict ingress to the MCP server and egress to intended APIs
 - **Agent auth** — per-session HMAC bearer token; unauthenticated `/exec` calls are rejected
+- **MCP client** — in-cluster, mint a token for `status.clientServiceAccount` (`kubectl create token <name> -n <namespace>` or `oc create token`). The operator does not mint or store that token.
 - **Ephemeral workspace** — `/workspace` is an `emptyDir`; destroyed with the pod
 
 The server does not filter shell commands. Capability is controlled by what is in the image and what RBAC allows.

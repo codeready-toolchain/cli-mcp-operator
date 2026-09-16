@@ -110,6 +110,13 @@ type CliMcpInstanceStatus struct {
 	// +optional
 	ResolvedSandboxImage string `json:"resolvedSandboxImage,omitempty"`
 
+	// ClientServiceAccount is the operator-managed ServiceAccount that is allowed
+	// to call this instance through kube-rbac-proxy. Mint a token with
+	// `kubectl create token <name> -n <namespace>` (or `oc create token`).
+	// The operator does not mint or store that token.
+	// +optional
+	ClientServiceAccount string `json:"clientServiceAccount,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional

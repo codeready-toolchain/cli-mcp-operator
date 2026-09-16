@@ -21,6 +21,7 @@ rules:
   - secrets
   - services
   - serviceaccounts
+  - configmaps
   verbs:
   - create
   - delete

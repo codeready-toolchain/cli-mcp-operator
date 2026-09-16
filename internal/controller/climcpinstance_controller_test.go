@@ -55,6 +55,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		nn = types.NamespacedName{Name: "oc", Namespace: ns.Name}
 		reconciler = &CliMcpInstanceReconciler{
 			Client:      k8sClient,
+			APIReader:   k8sClient,
 			Scheme:      k8sClient.Scheme(),
 			Images:      testImages(),
 			OnOpenShift: false,
@@ -62,13 +63,21 @@ var _ = Describe("CliMcpInstance Controller", func() {
 	})
 
 	AfterEach(func() {
-		inst := &climcpv1alpha1.CliMcpInstance{}
-		if err := k8sClient.Get(ctx, nn, inst); err == nil {
-			inst.Finalizers = nil
-			_ = k8sClient.Update(ctx, inst)
-			_ = k8sClient.Delete(ctx, inst)
+		var list climcpv1alpha1.CliMcpInstanceList
+		if err := k8sClient.List(ctx, &list, client.InNamespace(ns.Name)); err == nil {
+			for i := range list.Items {
+				key := client.ObjectKeyFromObject(&list.Items[i])
+				inst := &climcpv1alpha1.CliMcpInstance{}
+				if err := k8sClient.Get(ctx, key, inst); err != nil {
+					continue
+				}
+				inst.Finalizers = nil
+				_ = k8sClient.Update(ctx, inst)
+				_ = k8sClient.Delete(ctx, inst)
+			}
 		}
 		_ = k8sClient.Delete(ctx, ns)
+		_ = k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: authDelegatorCRBName}})
 	})
 
 	It("applies children, generate-once HMAC, and goes Ready when admin secrets are valid", func() {
@@ -85,6 +94,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandboxSAName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clientSAName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, &corev1.Service{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandboxSAName("oc"), Namespace: ns.Name}, &networkingv1.NetworkPolicy{})).To(Succeed())
 
@@ -100,6 +110,33 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}
 		Expect(secretVerbs).To(ConsistOf("create", "delete"))
 
+		clientRole := &rbacv1.Role{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clientSAName("oc"), Namespace: ns.Name}, clientRole)).To(Succeed())
+		Expect(clientRole.Rules).To(Equal(clientRoleRules("oc")))
+		Expect(clientRole.OwnerReferences).To(HaveLen(1))
+		Expect(clientRole.OwnerReferences[0].Name).To(Equal("oc"))
+		Expect(clientRole.OwnerReferences[0].Kind).To(Equal("CliMcpInstance"))
+
+		clientRB := &rbacv1.RoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clientSAName("oc"), Namespace: ns.Name}, clientRB)).To(Succeed())
+		Expect(clientRB.RoleRef.Name).To(Equal(clientSAName("oc")))
+		Expect(clientRB.Subjects).To(Equal([]rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      clientSAName("oc"),
+			Namespace: ns.Name,
+		}}))
+		Expect(clientRB.OwnerReferences).To(HaveLen(1))
+		Expect(clientRB.OwnerReferences[0].Name).To(Equal("oc"))
+		Expect(clientRB.OwnerReferences[0].Kind).To(Equal("CliMcpInstance"))
+		Expect(clientRB.OwnerReferences[0].Controller).NotTo(BeNil())
+		Expect(*clientRB.OwnerReferences[0].Controller).To(BeTrue())
+
+		krp := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: krpConfigMapName("oc"), Namespace: ns.Name}, krp)).To(Succeed())
+		Expect(krp.Data).To(HaveKey(krpConfigKey))
+		Expect(krp.Data[krpConfigKey]).To(ContainSubstring("subresource: mcp"))
+		Expect(krp.Data[krpConfigKey]).To(ContainSubstring("name: oc"))
+
 		deploy := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
 		args := deploy.Spec.Template.Spec.Containers[0].Args
@@ -107,6 +144,32 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(args).NotTo(ContainElement("--idle-timeout"))
 		Expect(args).To(ContainElement("--instance-name"))
 		Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
+		proxy := deploy.Spec.Template.Spec.Containers[1]
+		Expect(proxy.Args).To(ContainElement("--config-file=" + krpMountPath + "/" + krpConfigKey))
+		Expect(proxy.Args).To(ContainElement("--allow-paths=/mcp,/metrics,/live,/health,/sessions,/sessions/*"))
+		Expect(proxy.VolumeMounts).To(ContainElement(corev1.VolumeMount{
+			Name:      krpVolumeName,
+			MountPath: krpMountPath,
+			ReadOnly:  true,
+		}))
+		var krpVol *corev1.Volume
+		for i := range deploy.Spec.Template.Spec.Volumes {
+			if deploy.Spec.Template.Spec.Volumes[i].Name == krpVolumeName {
+				krpVol = &deploy.Spec.Template.Spec.Volumes[i]
+				break
+			}
+		}
+		Expect(krpVol).NotTo(BeNil())
+		Expect(krpVol.ConfigMap).NotTo(BeNil())
+		Expect(krpVol.ConfigMap.Name).To(Equal(krpConfigMapName("oc")))
+		Expect(deploy.Spec.Template.Annotations[krpRVAnnotation]).To(Equal(krp.ResourceVersion))
+		Expect(deploy.Spec.Template.Annotations[hmacRVAnnotation]).To(Equal(hmac.ResourceVersion))
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, crb)).To(Succeed())
+		Expect(crb.RoleRef).To(Equal(authDelegatorRoleRef()))
+		Expect(crb.OwnerReferences).To(BeEmpty())
+		Expect(crb.Subjects).To(ContainElement(mcpSASubject("oc", ns.Name)))
 
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		Expect(err).NotTo(HaveOccurred())
@@ -125,6 +188,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			g.Expect(inst.Status.WarmPoolDesired).To(Equal(int32(0)))
 			g.Expect(inst.Status.WarmPoolReady).To(Equal(int32(0)))
 			g.Expect(inst.Status.ResolvedSandboxImage).To(Equal(testImages().Sandbox))
+			g.Expect(inst.Status.ClientServiceAccount).To(Equal(clientSAName("oc")))
 		}).Should(Succeed())
 
 		deploy = &appsv1.Deployment{}
@@ -150,6 +214,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonSecretsNotFound))
+		Expect(inst.Status.ClientServiceAccount).To(Equal(clientSAName("oc")))
 	})
 
 	It("sets SecretKeysInvalid for empty kubeconfig and HMAC keys", func() {
@@ -277,6 +342,114 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: kubeconfigSecretName("oc"), Namespace: ns.Name}, &corev1.Secret{})).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: tlsSecretName("oc"), Namespace: ns.Name}, &corev1.Secret{})).To(Succeed())
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, crb)).To(Succeed())
+		Expect(crb.Subjects).To(BeEmpty())
+	})
+
+	It("sets ChildrenNotReady when auth-delegator CRB has a foreign roleRef", func() {
+		Expect(k8sClient.Create(ctx, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: authDelegatorCRBName},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "not-auth-delegator",
+			},
+		})).To(Succeed())
+		createAdminSecrets(ctx, ns.Name)
+		createInstance(ctx, nn)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(errAuthDelegatorRoleRef.Error()))
+
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonChildrenNotReady))
+		Expect(inst.Status.ClientServiceAccount).To(Equal(clientSAName("oc")))
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, crb)).To(Succeed())
+		Expect(crb.RoleRef.Name).To(Equal("not-auth-delegator"))
+	})
+
+	It("isolates client RBAC and kube-rbac-proxy config across instances", func() {
+		awsNN := types.NamespacedName{Name: "aws", Namespace: ns.Name}
+		createAdminSecretsFor(ctx, ns.Name, "oc")
+		createAdminSecretsFor(ctx, ns.Name, "aws")
+		createInstance(ctx, nn)
+		createInstance(ctx, awsNN)
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: awsNN})
+		Expect(err).NotTo(HaveOccurred())
+
+		ocRole := &rbacv1.Role{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clientSAName("oc"), Namespace: ns.Name}, ocRole)).To(Succeed())
+		Expect(ocRole.Rules).To(Equal(clientRoleRules("oc")))
+		awsRole := &rbacv1.Role{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clientSAName("aws"), Namespace: ns.Name}, awsRole)).To(Succeed())
+		Expect(awsRole.Rules).To(Equal(clientRoleRules("aws")))
+		Expect(awsRole.Rules[0].ResourceNames).NotTo(Equal(ocRole.Rules[0].ResourceNames))
+
+		ocKRP := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: krpConfigMapName("oc"), Namespace: ns.Name}, ocKRP)).To(Succeed())
+		awsKRP := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: krpConfigMapName("aws"), Namespace: ns.Name}, awsKRP)).To(Succeed())
+		Expect(ocKRP.Data[krpConfigKey]).To(ContainSubstring("name: oc"))
+		Expect(awsKRP.Data[krpConfigKey]).To(ContainSubstring("name: aws"))
+		Expect(ocKRP.Data[krpConfigKey]).NotTo(Equal(awsKRP.Data[krpConfigKey]))
+
+		ocDeploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, ocDeploy)).To(Succeed())
+		awsDeploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("aws"), Namespace: ns.Name}, awsDeploy)).To(Succeed())
+		Expect(krpVolumeConfigMapName(ocDeploy)).To(Equal(krpConfigMapName("oc")))
+		Expect(krpVolumeConfigMapName(awsDeploy)).To(Equal(krpConfigMapName("aws")))
+
+		crb := &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, crb)).To(Succeed())
+		Expect(crb.Subjects).To(ConsistOf(mcpSASubject("aws", ns.Name), mcpSASubject("oc", ns.Name)))
+	})
+
+	It("restores a mutated kube-rbac-proxy ConfigMap and rolls the Deployment", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstance(ctx, nn)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		krp := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: krpConfigMapName("oc"), Namespace: ns.Name}, krp)).To(Succeed())
+		wantYAML, err := krpConfigYAML(&climcpv1alpha1.CliMcpInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: "oc", Namespace: ns.Name},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(krp.Data[krpConfigKey]).To(Equal(wantYAML))
+		oldRV := krp.ResourceVersion
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		oldGen := deploy.Generation
+		Expect(deploy.Spec.Template.Annotations[krpRVAnnotation]).To(Equal(oldRV))
+
+		krp.Data[krpConfigKey] = "tampered: true\n"
+		Expect(k8sClient.Update(ctx, krp)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: krpConfigMapName("oc"), Namespace: ns.Name}, krp)).To(Succeed())
+		Expect(krp.Data[krpConfigKey]).To(Equal(wantYAML))
+		Expect(krp.ResourceVersion).NotTo(Equal(oldRV))
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		Expect(deploy.Spec.Template.Annotations[krpRVAnnotation]).To(Equal(krp.ResourceVersion))
+		Expect(deploy.Generation).To(BeNumerically(">", oldGen))
 	})
 
 	It("rejects CR names longer than 44 characters", func() {
@@ -767,23 +940,45 @@ func markPodReady(ctx context.Context, pod *corev1.Pod) {
 
 func createAdminSecrets(ctx context.Context, namespace string) {
 	GinkgoHelper()
+	createAdminSecretsFor(ctx, namespace, "oc")
+}
+
+func createAdminSecretsFor(ctx context.Context, namespace, instance string) {
+	GinkgoHelper()
 	Expect(k8sClient.Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName("oc"), Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName(instance), Namespace: namespace},
 		Data:       map[string][]byte{kubeconfigDataKey: []byte("apiVersion: v1\nkind: Config\n")},
 	})).To(Succeed())
-	createTLSSecret(ctx, namespace)
+	createTLSSecretFor(ctx, namespace, instance)
 }
 
 func createTLSSecret(ctx context.Context, namespace string) {
 	GinkgoHelper()
+	createTLSSecretFor(ctx, namespace, "oc")
+}
+
+func createTLSSecretFor(ctx context.Context, namespace, instance string) {
+	GinkgoHelper()
 	Expect(k8sClient.Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName("oc"), Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName(instance), Namespace: namespace},
 		Type:       corev1.SecretTypeTLS,
 		Data: map[string][]byte{
 			tlsCertKey: []byte("cert"),
 			tlsKeyKey:  []byte("key"),
 		},
 	})).To(Succeed())
+}
+
+func krpVolumeConfigMapName(deploy *appsv1.Deployment) string {
+	GinkgoHelper()
+	for i := range deploy.Spec.Template.Spec.Volumes {
+		vol := &deploy.Spec.Template.Spec.Volumes[i]
+		if vol.Name == krpVolumeName && vol.ConfigMap != nil {
+			return vol.ConfigMap.Name
+		}
+	}
+	Fail("kube-rbac-proxy ConfigMap volume not found")
+	return ""
 }
 
 func markDeploymentAvailable(ctx context.Context, namespace, name string) {

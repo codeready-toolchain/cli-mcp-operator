@@ -14,7 +14,9 @@ spec:
 # Admin must also apply:
 # - Secret cli-mcp-oc-kubeconfig (key kubeconfig)
 # - Secret cli-mcp-oc-tls (tls.crt/tls.key) on generic Kubernetes; OpenShift serving-cert fills this
-# - cluster RBAC in cluster-rbac/ (not created by the operator)
+# After Ready, mint a client token from status.clientServiceAccount:
+#   kubectl create token <name> -n <namespace>
+#   (or oc create token). The operator does not mint or store that token.
 # If the namespace is default-deny ingress, allow clients → Service cli-mcp-oc:8443
 # (the operator does not create an MCP ingress NetworkPolicy; kube-rbac-proxy is the front door).
 # OpenShift: grant an SCC/PSA that allows the sandbox non-root + drop ALL caps.

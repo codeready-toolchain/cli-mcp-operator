@@ -369,6 +369,13 @@ spec:
           status:
             description: CliMcpInstanceStatus is observed instance state.
             properties:
+              clientServiceAccount:
+                description: |-
+                  ClientServiceAccount is the operator-managed ServiceAccount that is allowed
+                  to call this instance through kube-rbac-proxy. Mint a token with
+                  `kubectl create token <name> -n <namespace>` (or `oc create token`).
+                  The operator does not mint or store that token.
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

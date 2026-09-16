@@ -36,8 +36,12 @@ func TestChildNames(t *testing.T) {
 	assert.Equal(t, "cli-mcp-oc-sandbox", sandboxSAName("oc"))
 	assert.Equal(t, "cli-mcp-oc-kubeconfig", kubeconfigSecretName("oc"))
 	assert.Equal(t, "cli-mcp-oc-tls", tlsSecretName("oc"))
+	assert.Equal(t, "cli-mcp-oc-client", clientSAName("oc"))
+	assert.Equal(t, "cli-mcp-oc-krp", krpConfigMapName("oc"))
 	// Longest child: cli-mcp- + 44 + -kubeconfig = 63.
 	assert.Len(t, kubeconfigSecretName("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr"), 63)
+	assert.LessOrEqual(t, len(clientSAName("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr")), 63)
+	assert.LessOrEqual(t, len(krpConfigMapName("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr")), 63)
 }
 
 func TestInstanceFromAdminSecret(t *testing.T) {
@@ -210,13 +214,30 @@ func TestManagerRoleIsCRDOnly(t *testing.T) {
 	role := loadRoleYAML(t, filepath.Join("..", "..", "config", "rbac", "role.yaml"))
 	forbidden := []string{
 		"pods", "secrets", "services", "serviceaccounts",
-		"deployments", "roles", "rolebindings", "networkpolicies",
+		"deployments", "roles", "rolebindings", "networkpolicies", "configmaps",
 	}
+	var crbVerbs, clusterRoleVerbs []string
+	var crbNames, clusterRoleNames []string
 	for _, rule := range role.Rules {
 		for _, res := range forbidden {
 			assert.NotContains(t, rule.Resources, res)
 		}
+		if slices.Contains(rule.Resources, "clusterrolebindings") {
+			crbVerbs = append(crbVerbs, rule.Verbs...)
+			crbNames = append(crbNames, rule.ResourceNames...)
+		}
+		if slices.Contains(rule.Resources, "clusterroles") {
+			clusterRoleVerbs = append(clusterRoleVerbs, rule.Verbs...)
+			clusterRoleNames = append(clusterRoleNames, rule.ResourceNames...)
+		}
 	}
+	assert.ElementsMatch(t, []string{"get", "create", "update", "patch"}, crbVerbs)
+	assert.NotContains(t, crbVerbs, "list")
+	assert.NotContains(t, crbVerbs, "watch")
+	assert.NotContains(t, crbVerbs, "delete")
+	assert.Equal(t, []string{authDelegatorCRBName}, crbNames)
+	assert.Equal(t, []string{"bind"}, clusterRoleVerbs)
+	assert.Equal(t, []string{authDelegatorClusterRole}, clusterRoleNames)
 }
 
 func TestNamespacedRoleHasChildResources(t *testing.T) {
@@ -230,7 +251,7 @@ func TestNamespacedRoleHasChildResources(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"pods", "secrets", "services", "serviceaccounts",
+		"pods", "secrets", "services", "serviceaccounts", "configmaps",
 		"deployments", "roles", "rolebindings", "networkpolicies",
 	} {
 		assert.Contains(t, resources, want)
@@ -251,6 +272,20 @@ func TestMCPRoleSecretVerbs(t *testing.T) {
 	assert.NotContains(t, secretRule.Verbs, "get")
 	assert.NotContains(t, secretRule.Verbs, "list")
 	assert.NotContains(t, secretRule.Verbs, "watch")
+}
+
+func TestClientRoleRules(t *testing.T) {
+	t.Parallel()
+	rules := clientRoleRules("oc")
+	require.Len(t, rules, 1)
+	assert.Equal(t, []string{climcpv1alpha1.GroupVersion.Group}, rules[0].APIGroups)
+	assert.Equal(t, []string{"climcpinstances/mcp"}, rules[0].Resources)
+	assert.Equal(t, []string{"oc"}, rules[0].ResourceNames)
+	assert.Equal(t, []string{"aws"}, clientRoleRules("aws")[0].ResourceNames)
+	assert.ElementsMatch(t, []string{"get", "create", "delete"}, rules[0].Verbs)
+	assert.Empty(t, rules[0].NonResourceURLs)
+	assert.NotContains(t, rules[0].Resources, "climcpinstances")
+	assert.NotContains(t, rules[0].Resources, "services")
 }
 
 func TestIdleTimeoutAndReplicasDefaults(t *testing.T) {

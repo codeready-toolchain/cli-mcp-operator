@@ -35,9 +35,10 @@ func TestNormalizeDeploymentFillsAPIDefaults(t *testing.T) {
 	inst.Name = "oc"
 	inst.Namespace = "ns"
 	hmac := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "1"}}
+	krp := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "2"}}
 
 	deploy := &appsv1.Deployment{}
-	deploy.Spec.Template = r.mcpPodTemplate(inst, nil, hmac)
+	deploy.Spec.Template = r.mcpPodTemplate(inst, nil, hmac, krp)
 	NormalizeDeployment(deploy)
 
 	server := deploy.Spec.Template.Spec.Containers[0]
@@ -51,6 +52,19 @@ func TestNormalizeDeploymentFillsAPIDefaults(t *testing.T) {
 	require.NotNil(t, deploy.Spec.Template.Spec.Volumes[0].Secret)
 	require.NotNil(t, deploy.Spec.Template.Spec.Volumes[0].Secret.DefaultMode)
 	assert.Equal(t, int32(0644), *deploy.Spec.Template.Spec.Volumes[0].Secret.DefaultMode)
+
+	var krpVol *corev1.Volume
+	for i := range deploy.Spec.Template.Spec.Volumes {
+		if deploy.Spec.Template.Spec.Volumes[i].Name == krpVolumeName {
+			krpVol = &deploy.Spec.Template.Spec.Volumes[i]
+			break
+		}
+	}
+	require.NotNil(t, krpVol)
+	require.NotNil(t, krpVol.ConfigMap)
+	require.NotNil(t, krpVol.ConfigMap.DefaultMode)
+	assert.Equal(t, int32(0644), *krpVol.ConfigMap.DefaultMode)
+	assert.Equal(t, "2", deploy.Spec.Template.Annotations[krpRVAnnotation])
 
 	assert.Equal(t, corev1.RestartPolicyAlways, deploy.Spec.Template.Spec.RestartPolicy)
 	require.NotNil(t, deploy.Spec.RevisionHistoryLimit)

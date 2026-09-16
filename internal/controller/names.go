@@ -32,9 +32,12 @@ const (
 
 	hmacMountPath = "/var/run/cli-mcp/hmac"
 	tlsMountPath  = "/etc/tls/private"
+	krpMountPath  = "/etc/kube-rbac-proxy"
 
 	hmacVolumeName = "hmac"
 	tlsVolumeName  = "tls"
+	krpVolumeName  = "kube-rbac-proxy-config"
+	krpConfigKey   = "config.yaml"
 
 	serverContainerName = "server"
 	proxyContainerName  = "kube-rbac-proxy"
@@ -44,7 +47,11 @@ const (
 	sandboxAgentPort = int32(8090)
 
 	hmacRVAnnotation         = "cli-mcp.redhat.com/hmac-resource-version"
+	krpRVAnnotation          = "cli-mcp.redhat.com/krp-resource-version"
 	sandboxOverlayAnnotation = "cli-mcp.redhat.com/sandbox-overlay"
+
+	authDelegatorCRBName     = "cli-mcp-auth-delegator"
+	authDelegatorClusterRole = "system:auth-delegator"
 
 	openshiftServingCertAnnotation = "service.beta.openshift.io/serving-cert-secret-name"
 
@@ -55,6 +62,8 @@ const (
 	tlsSuffix         = "-tls"
 	hmacSuffix        = "-hmac"
 	sandboxNameSuffix = "-sandbox"
+	clientNameSuffix  = "-client"
+	krpNameSuffix     = "-krp"
 )
 
 func childName(instance string) string {
@@ -75,6 +84,14 @@ func kubeconfigSecretName(instance string) string {
 
 func tlsSecretName(instance string) string {
 	return childNamePrefix + instance + tlsSuffix
+}
+
+func clientSAName(instance string) string {
+	return childNamePrefix + instance + clientNameSuffix
+}
+
+func krpConfigMapName(instance string) string {
+	return childNamePrefix + instance + krpNameSuffix
 }
 
 func instanceLabels(instance string) map[string]string {

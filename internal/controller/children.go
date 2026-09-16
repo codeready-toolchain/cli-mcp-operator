@@ -52,7 +52,20 @@ func (r *CliMcpInstanceReconciler) applyChildren(ctx context.Context, inst *clim
 	if err := r.applySandboxIngressNP(ctx, inst); err != nil {
 		return err
 	}
-	return r.applyDeployment(ctx, inst, hmac)
+	if err := r.applyClientSA(ctx, inst); err != nil {
+		return err
+	}
+	if err := r.applyClientRole(ctx, inst); err != nil {
+		return err
+	}
+	if err := r.applyClientRoleBinding(ctx, inst); err != nil {
+		return err
+	}
+	krp, err := r.applyKRPConfigMap(ctx, inst)
+	if err != nil {
+		return err
+	}
+	return r.applyDeployment(ctx, inst, hmac, krp)
 }
 
 func (r *CliMcpInstanceReconciler) applySandboxSA(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
@@ -207,7 +220,7 @@ func (r *CliMcpInstanceReconciler) applySandboxIngressNP(ctx context.Context, in
 	return nil
 }
 
-func (r *CliMcpInstanceReconciler) applyDeployment(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret) error {
+func (r *CliMcpInstanceReconciler) applyDeployment(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret, krp *corev1.ConfigMap) error {
 	if r.Images.Server == "" {
 		return fmt.Errorf("%s is empty", envRelatedImageServer)
 	}
@@ -231,7 +244,7 @@ func (r *CliMcpInstanceReconciler) applyDeployment(ctx context.Context, inst *cl
 	replicas := replicasOrDefault(inst.Spec.Replicas)
 	desired.Spec.Replicas = &replicas
 	desired.Spec.Selector = &metav1.LabelSelector{MatchLabels: serverLabels(inst.Name)}
-	desired.Spec.Template = r.mcpPodTemplate(inst, args, hmac)
+	desired.Spec.Template = r.mcpPodTemplate(inst, args, hmac, krp)
 	if err = controllerutil.SetControllerReference(inst, desired, r.Scheme); err != nil {
 		return fmt.Errorf("deployment ownerRef: %w", err)
 	}
@@ -285,13 +298,14 @@ func mcpServerArgs(inst *climcpv1alpha1.CliMcpInstance, overlay session.SandboxC
 	return args, nil
 }
 
-func (r *CliMcpInstanceReconciler) mcpPodTemplate(inst *climcpv1alpha1.CliMcpInstance, args []string, hmac *corev1.Secret) corev1.PodTemplateSpec {
+func (r *CliMcpInstanceReconciler) mcpPodTemplate(inst *climcpv1alpha1.CliMcpInstance, args []string, hmac *corev1.Secret, krp *corev1.ConfigMap) corev1.PodTemplateSpec {
 	runAsNonRoot := true
 	return corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: serverPodLabels(inst.Name),
 			Annotations: map[string]string{
 				hmacRVAnnotation: hmac.ResourceVersion,
+				krpRVAnnotation:  krp.ResourceVersion,
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -324,6 +338,20 @@ func (r *CliMcpInstanceReconciler) mcpPodTemplate(inst *climcpv1alpha1.CliMcpIns
 					VolumeSource: corev1.VolumeSource{
 						Secret: &corev1.SecretVolumeSource{
 							SecretName: tlsSecretName(inst.Name),
+						},
+					},
+				},
+				{
+					Name: krpVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: krpConfigMapName(inst.Name),
+							},
+							Items: []corev1.KeyToPath{{
+								Key:  krpConfigKey,
+								Path: krpConfigKey,
+							}},
 						},
 					},
 				},
@@ -382,6 +410,7 @@ func kubeRBACProxyContainer(image string) corev1.Container {
 			"--tls-cert-file=" + tlsMountPath + "/tls.crt",
 			"--tls-private-key-file=" + tlsMountPath + "/tls.key",
 			"--allow-paths=/mcp,/metrics,/live,/health,/sessions,/sessions/*",
+			"--config-file=" + krpMountPath + "/" + krpConfigKey,
 		},
 		Ports: []corev1.ContainerPort{{
 			Name:          "https",
@@ -392,11 +421,18 @@ func kubeRBACProxyContainer(image string) corev1.Container {
 			AllowPrivilegeEscalation: &allowPrivEsc,
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
-		VolumeMounts: []corev1.VolumeMount{{
-			Name:      tlsVolumeName,
-			MountPath: tlsMountPath,
-			ReadOnly:  true,
-		}},
+		VolumeMounts: []corev1.VolumeMount{
+			{
+				Name:      tlsVolumeName,
+				MountPath: tlsMountPath,
+				ReadOnly:  true,
+			},
+			{
+				Name:      krpVolumeName,
+				MountPath: krpMountPath,
+				ReadOnly:  true,
+			},
+		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				TCPSocket: &corev1.TCPSocketAction{Port: https},
