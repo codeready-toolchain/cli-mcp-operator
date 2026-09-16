@@ -51,12 +51,16 @@ type CliMcpInstanceReconciler struct {
 
 // Namespaced instance-child and pods/secrets verbs are a Role in the
 // OperatorGroup target namespace (config/rbac/namespaced_role.yaml), not this
-// ClusterRole. bind + named ClusterRoleBinding are clusterPermissions only.
+// ClusterRole. bind, unscoped CRB create, and named CRB writes are
+// clusterPermissions only.
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/finalizers,verbs=update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames="system:auth-delegator",verbs=bind
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,resourceNames=cli-mcp-auth-delegator,verbs=get;create;update;patch
+// Collection create has no object name at authorize time, so resourceNames cannot
+// scope it. get/update/patch stay pinned to the well-known binding.
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,verbs=create
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterrolebindings,resourceNames=cli-mcp-auth-delegator,verbs=get;update;patch
 
 func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)

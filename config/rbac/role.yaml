@@ -32,12 +32,17 @@ rules:
   - update
 - apiGroups:
   - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  verbs:
+  - create
+- apiGroups:
+  - rbac.authorization.k8s.io
   resourceNames:
   - cli-mcp-auth-delegator
   resources:
   - clusterrolebindings
   verbs:
-  - create
   - get
   - patch
   - update

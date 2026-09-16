@@ -218,7 +218,7 @@ func (r *CliMcpInstanceReconciler) applyAuthDelegatorCRB(ctx context.Context) er
 			RoleRef:    authDelegatorRoleRef(),
 			Subjects:   subjects,
 		}
-		if err := r.Create(ctx, crb); err != nil {
+		if err = r.Create(ctx, crb); err != nil {
 			return fmt.Errorf("create %s: %w", authDelegatorCRBName, err)
 		}
 		return nil
@@ -233,7 +233,7 @@ func (r *CliMcpInstanceReconciler) applyAuthDelegatorCRB(ctx context.Context) er
 		return nil
 	}
 	crb.Subjects = subjects
-	if err := r.Update(ctx, crb); err != nil {
+	if err = r.Update(ctx, crb); err != nil {
 		return fmt.Errorf("update %s: %w", authDelegatorCRBName, err)
 	}
 	return nil

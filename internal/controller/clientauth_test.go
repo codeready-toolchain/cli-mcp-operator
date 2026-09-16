@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 
@@ -128,10 +127,10 @@ func TestApplyClientAuthChildren(t *testing.T) {
 
 	wantYAML, err := krpConfigYAML(inst)
 	require.NoError(t, err)
-	assert.Equal(t, wantYAML, cm.Data[krpConfigKey])
+	assert.YAMLEq(t, wantYAML, cm.Data[krpConfigKey])
 	gotCM := &corev1.ConfigMap{}
 	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: krpConfigMapName("oc"), Namespace: "ns"}, gotCM))
-	assert.Equal(t, wantYAML, gotCM.Data[krpConfigKey])
+	assert.YAMLEq(t, wantYAML, gotCM.Data[krpConfigKey])
 	require.Len(t, gotCM.OwnerReferences, 1)
 	assert.Equal(t, "oc", gotCM.OwnerReferences[0].Name)
 
@@ -145,7 +144,7 @@ func TestApplyClientAuthChildren(t *testing.T) {
 	require.NoError(t, c.Update(t.Context(), gotCM))
 	restored, err := r.applyKRPConfigMap(t.Context(), inst)
 	require.NoError(t, err)
-	assert.Equal(t, wantYAML, restored.Data[krpConfigKey])
+	assert.YAMLEq(t, wantYAML, restored.Data[krpConfigKey])
 }
 
 func TestMissingChildrenIncludesClientAuth(t *testing.T) {
@@ -339,8 +338,7 @@ func TestApplyAuthDelegatorCRB(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(oc, existing).Build()
 		r := &CliMcpInstanceReconciler{Client: c, APIReader: c, Scheme: scheme}
 		err := r.applyAuthDelegatorCRB(t.Context())
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, errAuthDelegatorRoleRef))
+		require.ErrorIs(t, err, errAuthDelegatorRoleRef)
 
 		crb := getCRB(t, c)
 		assert.Equal(t, "not-auth-delegator", crb.RoleRef.Name)

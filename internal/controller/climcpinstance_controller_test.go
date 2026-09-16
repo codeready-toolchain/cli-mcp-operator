@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -375,6 +377,101 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		crb := &rbacv1.ClusterRoleBinding{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, crb)).To(Succeed())
 		Expect(crb.RoleRef.Name).To(Equal("not-auth-delegator"))
+	})
+
+	It("lets a manager-role SA create the auth-delegator CRB but not update a different name", func() {
+		managerRules := loadRoleYAML(GinkgoTB(), filepath.Join("..", "..", "config", "rbac", "role.yaml"))
+		opRole := &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-manager-role"},
+			Rules:      managerRules.Rules,
+		}
+		Expect(k8sClient.Create(ctx, opRole)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, opRole) })
+
+		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name:      "manager",
+			Namespace: ns.Name,
+		}}
+		Expect(k8sClient.Create(ctx, sa)).To(Succeed())
+
+		saCRB := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-manager"},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     opRole.Name,
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      sa.Name,
+				Namespace: ns.Name,
+			}},
+		}
+		Expect(k8sClient.Create(ctx, saCRB)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, saCRB) })
+
+		other := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-other-crb"},
+			RoleRef:    authDelegatorRoleRef(),
+			Subjects:   []rbacv1.Subject{mcpSASubject("other", ns.Name)},
+		}
+		Expect(k8sClient.Create(ctx, other)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, other) })
+
+		impCfg := rest.CopyConfig(cfg)
+		impCfg.Impersonate = rest.ImpersonationConfig{
+			UserName: "system:serviceaccount:" + ns.Name + ":" + sa.Name,
+			Groups: []string{
+				"system:serviceaccounts",
+				"system:serviceaccounts:" + ns.Name,
+				"system:authenticated",
+			},
+		}
+		asOperator, err := client.New(impCfg, client.Options{Scheme: k8sClient.Scheme()})
+		Expect(err).NotTo(HaveOccurred())
+
+		expectForbidden := func(err error) {
+			GinkgoHelper()
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsForbidden(err)).To(BeTrue())
+		}
+
+		created := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: authDelegatorCRBName},
+			RoleRef:    authDelegatorRoleRef(),
+			Subjects:   []rbacv1.Subject{mcpSASubject("oc", ns.Name)},
+		}
+		Expect(asOperator.Create(ctx, created)).To(Succeed())
+		Expect(asOperator.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, created)).To(Succeed())
+		created.Subjects = []rbacv1.Subject{mcpSASubject("aws", ns.Name)}
+		Expect(asOperator.Update(ctx, created)).To(Succeed())
+
+		// Unscoped create can mint extra auth-delegator CRBs; bind still blocks other ClusterRoles.
+		extra := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-extra-auth-delegator"},
+			RoleRef:    authDelegatorRoleRef(),
+			Subjects:   []rbacv1.Subject{mcpSASubject("extra", ns.Name)},
+		}
+		Expect(asOperator.Create(ctx, extra)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, extra) })
+
+		expectForbidden(asOperator.Create(ctx, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-cluster-admin"},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+			},
+			Subjects: []rbacv1.Subject{mcpSASubject("oc", ns.Name)},
+		}))
+
+		expectForbidden(asOperator.Get(ctx, types.NamespacedName{Name: other.Name}, &rbacv1.ClusterRoleBinding{}))
+		other.Subjects = []rbacv1.Subject{mcpSASubject("aws", ns.Name)}
+		expectForbidden(asOperator.Update(ctx, other))
+		expectForbidden(asOperator.Delete(ctx, created))
+
+		var list rbacv1.ClusterRoleBindingList
+		expectForbidden(asOperator.List(ctx, &list))
 	})
 
 	It("isolates client RBAC and kube-rbac-proxy config across instances", func() {

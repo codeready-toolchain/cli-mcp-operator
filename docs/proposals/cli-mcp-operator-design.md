@@ -158,11 +158,14 @@ Operator ClusterRole `manager-role` / CSV `clusterPermissions` (`config/rbac/rol
   verbs: ["bind"]
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["clusterrolebindings"]
+  verbs: ["create"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["clusterrolebindings"]
   resourceNames: ["cli-mcp-auth-delegator"]
-  verbs: ["get", "create", "update", "patch"]
+  verbs: ["get", "update", "patch"]
 ```
 
-No `list` / `watch` / `delete` on ClusterRoleBindings. No unbound ClusterRoleBinding verbs. These rules are **not** the CSV TokenReview / SubjectAccessReview already granted so the **operator** metrics kube-rbac-proxy can run. That stays on the operator SA. The MCP sidecar uses the MCP SA via this ClusterRoleBinding.
+`create` is unscoped because a kube collection create has no name at authorize time (`resourceNames` would deny the operator’s own Create). `get` / `update` / `patch` stay named. No `list` / `watch` / `delete`. Install does **not** precreate the CRB; the operator creates it if missing. These rules are **not** the CSV TokenReview / SubjectAccessReview already granted so the **operator** metrics kube-rbac-proxy can run. That stays on the operator SA. The MCP sidecar uses the MCP SA via this ClusterRoleBinding.
 
 ConfigMaps for `cli-mcp-<name>-krp` go on `config/rbac/namespaced_role.yaml` (same verbs as other namespaced children) plus `Owns(ConfigMap)` (HMAC Secrets are already covered by the Secret watch).
 
@@ -608,7 +611,7 @@ Depends on Phase 5. Specified in [MCP client authentication](#mcp-client-authent
 
 - Child builders: ConfigMap `cli-mcp-<name>-krp` (`--config-file`, ResourceAttributes, stamp RV on pod template like HMAC); client SA/Role/RoleBinding `cli-mcp-<name>-client` (`climcpinstances/mcp`); `status.clientServiceAccount` + CRD description with mint command.
 - Shared ClusterRoleBinding `cli-mcp-auth-delegator` (Get by name; subjects = live MCP SAs; no instance `ownerRef`; finalizer patches when deleting, including last instance).
-- `config/rbac/role.yaml`: `bind` + named CRB get/create/update/patch. `namespaced_role.yaml`: configmaps. `Owns(ConfigMap)`. No `config/samples/cluster-rbac/mcp-client.yaml`.
+- `config/rbac/role.yaml`: `bind`; unscoped CRB `create`; named CRB get/update/patch. `namespaced_role.yaml`: configmaps. `Owns(ConfigMap)`. No `config/samples/cluster-rbac/mcp-client.yaml`.
 - Ready: client children + CRB subject; `ChildrenNotReady` on CRB name conflict. No token Secret.
 - **Test tips:** envtest for client Role (not `/mcp` ClusterRole), krp ConfigMap mount + RV stamp, CRB subjects replace / skip deleting / last-instance empty subjects, instance isolation (`resourceNames` + krp `name`), `status.clientServiceAccount`.
 - **Done when:** a CR is callable with `kubectl create token` against `status.clientServiceAccount` and a second instance’s client token does not pass the first instance’s kube-rbac-proxy.

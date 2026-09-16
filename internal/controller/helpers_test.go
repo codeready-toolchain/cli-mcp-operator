@@ -238,6 +238,26 @@ func TestManagerRoleIsCRDOnly(t *testing.T) {
 	assert.Equal(t, []string{authDelegatorCRBName}, crbNames)
 	assert.Equal(t, []string{"bind"}, clusterRoleVerbs)
 	assert.Equal(t, []string{authDelegatorClusterRole}, clusterRoleNames)
+
+	var createNames, namedWriteNames []string
+	var createVerbs, namedWriteVerbs []string
+	for _, rule := range role.Rules {
+		if !slices.Contains(rule.Resources, "clusterrolebindings") {
+			continue
+		}
+		if slices.Contains(rule.Verbs, "create") {
+			createVerbs = append(createVerbs, rule.Verbs...)
+			createNames = append(createNames, rule.ResourceNames...)
+		}
+		if slices.Contains(rule.Verbs, "update") {
+			namedWriteVerbs = append(namedWriteVerbs, rule.Verbs...)
+			namedWriteNames = append(namedWriteNames, rule.ResourceNames...)
+		}
+	}
+	assert.Equal(t, []string{"create"}, createVerbs)
+	assert.Empty(t, createNames)
+	assert.ElementsMatch(t, []string{"get", "update", "patch"}, namedWriteVerbs)
+	assert.Equal(t, []string{authDelegatorCRBName}, namedWriteNames)
 }
 
 func TestNamespacedRoleHasChildResources(t *testing.T) {
@@ -309,7 +329,7 @@ func TestMCPServerArgsOmitPoolAndIdle(t *testing.T) {
 	assert.Contains(t, args, "--sandbox-service-account")
 }
 
-func loadRoleYAML(t *testing.T, path string) rbacv1.Role {
+func loadRoleYAML(t testing.TB, path string) rbacv1.Role {
 	t.Helper()
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
