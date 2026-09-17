@@ -120,7 +120,7 @@ func (r *CliMcpInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if reconcileErr != nil {
 		return ctrl.Result{}, reconcileErr
 	}
-	return ctrl.Result{RequeueAfter: mergeRequeueAfter(idleResult.RequeueAfter, poolRequeueAfter(orig, pool, time.Now().UTC()))}, nil
+	return ctrl.Result{RequeueAfter: scheduledRequeueAfter(idleResult.RequeueAfter, poolRequeueAfter(orig, pool, time.Now().UTC()))}, nil
 }
 
 func (r *CliMcpInstanceReconciler) finalize(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (ctrl.Result, error) {

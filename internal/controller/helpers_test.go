@@ -546,6 +546,14 @@ func TestMergeRequeueAfter(t *testing.T) {
 	assert.Equal(t, time.Minute, mergeRequeueAfter(2*time.Minute, time.Minute))
 }
 
+func TestScheduledRequeueAfter(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, managedResyncInterval, scheduledRequeueAfter(0, 0))
+	assert.Equal(t, time.Minute, scheduledRequeueAfter(time.Minute, 0))
+	assert.Equal(t, time.Minute, scheduledRequeueAfter(0, time.Minute))
+	assert.Equal(t, time.Minute, scheduledRequeueAfter(2*time.Minute, time.Minute))
+}
+
 func TestDeleteUnassignedIfStillUnassigned(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()

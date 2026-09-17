@@ -330,3 +330,15 @@ func mergeRequeueAfter(a, b time.Duration) time.Duration {
 		return min(a, b)
 	}
 }
+
+// Quiet instances still come back so operator-owned objects are recreated if
+// deleted. The shared auth-delegator ClusterRoleBinding is Get-by-name only;
+// watching ClusterRoleBindings would list every CRB into the manager cache.
+const managedResyncInterval = 5 * time.Minute
+
+func scheduledRequeueAfter(idle, pool time.Duration) time.Duration {
+	if d := mergeRequeueAfter(idle, pool); d > 0 {
+		return d
+	}
+	return managedResyncInterval
+}

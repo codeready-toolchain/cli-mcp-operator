@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -32,9 +33,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/yaml"
 
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
@@ -202,6 +205,14 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
 		Expect(deploy.Generation).To(Equal(gen))
+
+		Expect(k8sClient.Delete(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: authDelegatorCRBName}})).To(Succeed())
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(managedResyncInterval))
+		crb = &rbacv1.ClusterRoleBinding{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, crb)).To(Succeed())
+		Expect(crb.Subjects).To(ContainElement(mcpSASubject("oc", ns.Name)))
 	})
 
 	It("sets SecretsNotFound when kubeconfig is missing", func() {
@@ -512,6 +523,21 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		crb := &rbacv1.ClusterRoleBinding{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: authDelegatorCRBName}, crb)).To(Succeed())
 		Expect(crb.Subjects).To(ConsistOf(mcpSASubject("aws", ns.Name), mcpSASubject("oc", ns.Name)))
+
+		// kube-rbac-proxy SARs the ConfigMap ResourceAttributes (including name) for
+		// get/create/delete. resourceNames still scopes create when the SAR carries a name.
+		authz, err := kubernetes.NewForConfig(cfg)
+		Expect(err).NotTo(HaveOccurred())
+		ocRA := krpResourceAttributesFromCM(ocKRP)
+		awsRA := krpResourceAttributesFromCM(awsKRP)
+		for _, verb := range ocRole.Rules[0].Verbs {
+			Expect(clientMCPAccess(ctx, authz, ns.Name, "oc", ocRA, verb, ocRA.Name, ocRA.Subresource).Allowed).To(BeTrue(), "oc %s oc", verb)
+			Expect(clientMCPAccess(ctx, authz, ns.Name, "aws", awsRA, verb, awsRA.Name, awsRA.Subresource).Allowed).To(BeTrue(), "aws %s aws", verb)
+			Expect(clientMCPAccess(ctx, authz, ns.Name, "oc", awsRA, verb, awsRA.Name, awsRA.Subresource).Allowed).To(BeFalse(), "oc %s aws", verb)
+			Expect(clientMCPAccess(ctx, authz, ns.Name, "aws", ocRA, verb, ocRA.Name, ocRA.Subresource).Allowed).To(BeFalse(), "aws %s oc", verb)
+		}
+		Expect(clientMCPAccess(ctx, authz, ns.Name, "oc", ocRA, "create", "", ocRA.Subresource).Allowed).To(BeFalse())
+		Expect(clientMCPAccess(ctx, authz, ns.Name, "oc", ocRA, "get", ocRA.Name, "").Allowed).To(BeFalse())
 	})
 
 	It("restores a mutated kube-rbac-proxy ConfigMap and rolls the Deployment", func() {
@@ -1076,6 +1102,38 @@ func krpVolumeConfigMapName(deploy *appsv1.Deployment) string {
 	}
 	Fail("kube-rbac-proxy ConfigMap volume not found")
 	return ""
+}
+
+func krpResourceAttributesFromCM(cm *corev1.ConfigMap) krpResourceAttributes {
+	GinkgoHelper()
+	var parsed krpConfig
+	Expect(yaml.Unmarshal([]byte(cm.Data[krpConfigKey]), &parsed)).To(Succeed())
+	return parsed.Authorization.ResourceAttributes
+}
+
+func clientMCPAccess(ctx context.Context, authz kubernetes.Interface, namespace, saInstance string, ra krpResourceAttributes, verb, name, subresource string) authorizationv1.SubjectAccessReviewStatus {
+	GinkgoHelper()
+	sar, err := authz.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
+		Spec: authorizationv1.SubjectAccessReviewSpec{
+			User: "system:serviceaccount:" + namespace + ":" + clientSAName(saInstance),
+			Groups: []string{
+				"system:serviceaccounts",
+				"system:serviceaccounts:" + namespace,
+				"system:authenticated",
+			},
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace:   ra.Namespace,
+				Verb:        verb,
+				Group:       ra.APIGroup,
+				Version:     ra.APIVersion,
+				Resource:    ra.Resource,
+				Subresource: subresource,
+				Name:        name,
+			},
+		},
+	}, metav1.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	return sar.Status
 }
 
 func markDeploymentAvailable(ctx context.Context, namespace, name string) {
