@@ -3,7 +3,7 @@
 **Status:** Decisions recorded
 **Related:** [Design document](cli-mcp-operator-design.md)
 
-This is the **HOW** (operator) for an **open-source Kubernetes operator**. First-party internal deploy is one catalog consumer; do not bake that environment into the API. Proxy WHAT stays in [credential-proxy-design.md](credential-proxy-design.md); proxy Q2–Q12 stay paused until this operator is implemented.
+This is the **HOW** (operator) for an **open-source Kubernetes operator**. First-party internal deploy is one catalog consumer; do not bake that environment into the API. Proxy design (Phase 7) is [credential-proxy-design.md](credential-proxy-design.md) (Final); proxy questions Q1–Q15 are decided.
 
 ---
 
@@ -282,7 +282,7 @@ _Considered and rejected: admin-applied client SA / `/mcp` ClusterRole / per-ins
 
 ### Option A: Omit. Extension point is “same CR, new fields + children later”
 
-- **Pro:** Does not freeze injector types, route lists, or CA knobs before proxy Q2–Q12. CRD additive changes are normal for v1alpha1.
+- **Pro:** Does not freeze injector types, route lists, or CA knobs before the proxy pass. CRD additive changes are normal for v1alpha1.
 - **Con:** First CRD bump in the proxy PR (expected).
 
 **Decision:** Option A — document the extension point; do not stub `spec.proxy` on this CRD.

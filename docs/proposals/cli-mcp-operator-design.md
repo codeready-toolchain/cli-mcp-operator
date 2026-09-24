@@ -510,7 +510,7 @@ Q15: `Ready` is investigation kubeconfig Secret `cli-mcp-<name>-kubeconfig` pres
 
 ## Implementation Plan
 
-Do **not** start the paused proxy work. This plan is operator + current MCP only. The MCP is not in production; **later phases may break earlier MCP flag defaults, labels, and deploy YAML.** Prefer that over a dual code path.
+Do **not** start proxy children in operator phases 1–5. This plan is operator + current MCP only. Proxy HOW is Phase 7 ([credential-proxy-design.md](credential-proxy-design.md)). The MCP is not in production; **later phases may break earlier MCP flag defaults, labels, and deploy YAML.** Prefer that over a dual code path.
 
 Phase 3 removes MCP `startCleanupLoop` / `CleanupStale`. **Idle GC of assigned sessions lands in Phase 4** with instance children (same label list as the finalizer, plus `last-activity`; not the two-writer pool). Phase 5 is warm pool + Ready pool-init / no-flap-on-claim only. The first catalog therefore has a janitor.
 
@@ -628,7 +628,7 @@ This path is **test/validation only** (dev cluster, kind, a non-prod overlay). V
 
 ### Phase 7 — Return to proxy design — **no PR in this repo (docs / later PRs)**
 
-Rewrite [credential-proxy-design.md](credential-proxy-design.md) HOW against this operator. Resume proxy Q2–Q12. Then a **new** implementation plan for proxy children — not more phases of 1–5. Shipping that plan (not this rewrite) is what unlocks production/stage first-party MCP client wiring.
+HOW is [credential-proxy-design.md](credential-proxy-design.md) (Final). Proxy questions Q1–Q15 are decided. Ship the **new** implementation plan there (P1–P5) — not more phases of 1–5. Shipping that plan (not this rewrite) is what unlocks production/stage first-party MCP client wiring.
 
 ## Out of scope / non-goals
 

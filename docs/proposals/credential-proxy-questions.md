@@ -1,11 +1,11 @@
 # CLI MCP — credential-isolating proxy — design questions
 
-**Status:** Paused after Q1 — remaining questions wait on the operator **implementation**  
+**Status:** Decisions recorded
 **Related:** [Design document](credential-proxy-design.md) · [Operator HOW](cli-mcp-operator-design.md) · [Operator questions](cli-mcp-operator-questions.md)
 
-Q1 is decided. **Q2–Q12 are on pause** until the CLI MCP Operator is implemented. This proxy document is the component/security inventory (WHAT). The operator is HOW those objects are managed. After that implementation, return here and finish these questions with controller ownership in mind.
+Each question has options with trade-offs and a recommendation. Decisions for Q1–Q15 are recorded below. The matching HOW is [credential-proxy-design.md](credential-proxy-design.md) (Final).
 
-This is an **open-source Kubernetes operator**. First-party internal deploy is one catalog consumer; do not bake that environment into the API.
+Q1–Q15 are decided. This is **Phase 7**: the operator is implemented (children, Ready, two Pod writers, HMAC generate-once, `cli-mcp.redhat.com` labels, dedicated sandbox SA). First-party internal deploy is one catalog consumer; do not bake that environment into the API.
 
 ---
 
@@ -17,45 +17,37 @@ The umbrella analysis said the MCP server would create the proxy Deployment, rou
 
 A CRD instance (one CR = one MCP instance / class) is the API. A leader-elected operator Deployment watches it and bootstraps instance infrastructure: MCP server Deployment, proxy Deployment+ClusterIP Service, CA, route ConfigMap, dummy kubeconfig, NetworkPolicies, sandbox SA, and related RBAC wiring.
 
-The MCP server stays a horizontally scaled data plane: `bash`, per-session pods, HMAC claim/create/`/exec`. It does **not** reconcile the proxy stack, the MCP Deployment, warm-pool size, or idle GC (those are the operator — see operator Q5). Sessions are not CRs.
+The MCP server stays a horizontally scaled data plane: `bash`, per-session pods, HMAC claim/create/`exec`. It does **not** reconcile the proxy stack, the MCP Deployment, warm-pool size, or idle GC (those are the operator — see operator Q5). Sessions are not CRs.
 
-GitOps installs the operator once and applies `CliMcpInstance` (name TBD) objects. It does not hand-maintain the proxy Deployment.
+GitOps installs the operator once and applies `CliMcpInstance` objects. It does not hand-maintain the proxy Deployment.
 
-- **Pro:** Proper watches (deleted/edited proxy comes back), ownerRefs/GC, status (`ProxyReady`), validation on spec (sandbox image, proxy config, warm pool). A second class later is another CR, not a snowflake Deployment. Matches claw-operator’s split (operator owns children; workload process is not the controller). Resolves singleton-vs-stateless: operator is the singleton; MCP replicas stay stateless.
-- **Con:** CRD, manager, envtest, operator RBAC — larger than “apply() in `cmd/server`.” Two Deployments to run (operator + MCP). Operator design must reserve spec/status for proxy children even if proxy ships in a later phase.
+- **Pro:** Proper watches (deleted/edited proxy comes back), ownerRefs/GC, status (`Ready` folds proxy children), validation on spec. A second class later is another CR, not a snowflake Deployment. Matches claw-operator’s split (operator owns children; workload process is not the controller). Resolves singleton-vs-stateless: operator is the singleton; MCP replicas stay stateless.
+- **Con:** CRD, manager, envtest, operator RBAC — already paid in operator phases 1–5.
 
-**Decision:** Option D — real operator. This proxy design keeps the security/topology WHAT; operator design will be HOW. Do not put an ensure-loop mini-operator in the MCP process.
+**Decision:** Option D — real operator. This proxy design keeps the security/topology WHAT; operator design is HOW. Do not put an ensure-loop mini-operator in the MCP process.
 
 _Considered and rejected: Option A (in-process MCP reconcile of the proxy Deployment — re-invents operator watches/ownerRefs/status and collides with stateless MCP replicas), Option B (GitOps-static proxy/dummy/routes — cannot derive dummy kubeconfig and CA at runtime; NP drift is the token-replay footgun), Option C (GitOps Deployments + MCP-derived CA/dummy/NPs — splits the security boundary across two owners and still needs a half-written reconciler in the MCP)._
 
 ---
 
-**Pause:** Q2–Q12 below are unchanged in *decision status* and **not** being walked through until the operator is implemented. Wording is aligned with the operator HOW (Final): `cli-mcp.redhat.com` labels, dedicated sandbox SA, operator owns children.
-
 ## Q2: How broad is the investigation ClusterRole?
 
-This is the identity the proxy injects. It must be a **read-only investigation** surface, not an SA that already has `pods/exec`, VM start/stop, or `nodes/proxy`. Tokens live in a **new** Secret. The operator does not mint those tokens (admin-provided kubeconfig).
+This is the identity the proxy injects. It must be a **read-only investigation** surface, not an SA that already has `pods/exec`, VM start/stop, or `nodes/proxy`. Tokens live in the admin Secret `cli-mcp-<name>-kubeconfig`. The operator does not mint those tokens and does **not** create the investigation SA or ClusterRoleBinding (identity ownership: admin/GitOps binds identities GitOps creates).
 
-### Option A: Bind `view` + a dedicated `cli-mcp-investigation-readonly` ClusterRole
+This repo can still ship **sample** ClusterRole YAML under `config/samples/` so operator tests and catalog consumers have a starting point. First-party GitOps copies or tightens that sample; it is not a reconciler child.
 
-`view` for namespaced get/list/watch. Extra ClusterRole for cluster-scoped reads investigators actually use (namespaces, PVs, CRDs, ClusterRoles, storageclasses, metrics, and on OpenShift e.g. clusteroperators) **minus** `nodes/proxy`, **minus** any exec/attach/portforward, **no secrets**.
-
-- **Pro:** Close to a typical cluster-wide `oc` investigation view; a client replacing a broader kubernetes MCP does not silently lose cluster-scoped reads.
-- **Con:** `view` is broad (all namespaced resources including user Secrets **in every namespace**). `view` includes `get` on `secrets`. That is a real data leak via `oc get secret` even with no exec.
+A workspace note currently describes first-party investigation RBAC as `view` + extras. That line is a placeholder this question replaces.
 
 ### Option B: Custom ClusterRole only — no `view`; explicit resource list; no secrets
 
-Hand-maintained rules: pods, logs, events, controllers, routes, networkpolicies, CRs needed for investigations, cluster-scoped reads from Option A, **no `secrets`**, no `pods/exec`, no `nodes/proxy`.
+Hand-maintained rules: pods, logs, events, controllers, routes, networkpolicies, CRs needed for investigations, plus cluster-scoped reads investigators actually use (namespaces, PVs, CRDs, ClusterRoles, storageclasses, metrics, and on OpenShift e.g. clusteroperators). **No `secrets`**, no `pods/exec` / attach / portforward, no `nodes/proxy`, no impersonate, no VM mutate.
 
-- **Pro:** Closes `oc get secret -A` / `oc get secret … -o yaml`. Least privilege vs `view`.
+- **Pro:** Closes `oc get secret -A`. Least privilege vs `view`.
 - **Con:** Will miss resources until someone adds them; more GitOps churn. Investigations that today `oc get secret` would break — that is intended. If a specific namespace’s files must be read, use a **separate**, namespace-pinned tool, not this proxy.
 
-### Option C: Reuse an existing privileged SA / kubeconfig but rely on no-exec + proxy
+**Decision:** Option B — custom ClusterRole, no `view`, no secrets. Admin/GitOps owns the binding; this repo ships a sample only.
 
-- **Pro:** No new tokens.
-- **Con:** If that SA has exec or VM power, proxy injection would give the bash sandbox **exec**. Violates the stated no-exec requirement.
-
-**Recommendation:** Option B. Do not bind `view` (it includes secrets). Do not reuse an SA that already has exec / VM mutate / `nodes/proxy`. Start from the *effective* investigation surface you need, strip secrets/exec/`nodes/proxy`/impersonate/VM mutate, then add resources only when a real investigation hits a gap. Verify with `kubectl auth can-i --list`.
+_Considered and rejected: Option A (`view` + extras — `view` includes `get` on Secrets), Option C (reuse a privileged SA — proxy injection would grant exec/VM power)._
 
 ---
 
@@ -63,40 +55,31 @@ Hand-maintained rules: pods, logs, events, controllers, routes, networkpolicies,
 
 kubectl honors `HTTPS_PROXY=http://user:pass@host:8080` and sends `Proxy-Authorization` on CONNECT. NetworkPolicy (proxy ingress) is the primary control so only sandbox pods can reach `:8080`. This would be a second factor if something in the **instance namespace** can spoof sandbox labels or if NP is mis-applied.
 
+The operator already treats that namespace as the secret trust boundary (HMAC, kubeconfig). Proxy ingress NP + instance labels is new; claw-operator has **no** proxy-ingress NP.
+
 ### Option A: NetworkPolicy only (v1)
 
-- **Pro:** Matches claw-operator today (claw has **no** proxy-ingress NP and no proxy basic auth — we are already stricter on NP). Fewer secrets. kubectl/`curl` keep a simple `HTTPS_PROXY`.
+- **Pro:** Matches claw’s proxy auth (none) while we are already stricter on NP. Fewer secrets. kubectl/`curl` keep a simple `HTTPS_PROXY`.
 - **Con:** Anyone who can run a pod with this instance’s sandbox labels in the CR namespace can use the proxy and thus the investigation token. That already implies they can create pods in that namespace (high privilege).
 
-### Option B: NP + proxy basic auth (secret in sandbox env)
+**Decision:** Option A — NetworkPolicy only for v1. Revisit auth if untrusted workloads in the instance namespace can set arbitrary pod labels.
 
-- **Pro:** Defense in depth if labels are copied or NP selectors go wrong.
-- **Con:** Secret mounted in every sandbox (readable by bash — but it only authorizes *use of the already-dummy path*, not a cluster token). goproxy must enforce CONNECT auth; claw does not. More moving parts for v1.
-
-**Recommendation:** Option A for v1. Proxy ingress NP + ClusterIP + instance labels. Revisit auth if we ever run untrusted workloads in the instance namespace that can set arbitrary pod labels.
+_Considered and rejected: Option B (NP + proxy basic auth — extra secret in every sandbox and CONNECT auth claw does not have)._
 
 ---
 
 ## Q4: How tight is proxy egress NetworkPolicy?
 
-Sandbox egress is proxy+DNS only. Proxy egress must reach every API server listed in the investigation kubeconfig (often `:6443`, in-cluster `:443`). Claw’s kube path adds those ports to `0.0.0.0/0` and treats L7 as the real allowlist.
+Sandbox egress is proxy+DNS only. Proxy egress must reach every API server listed in the investigation kubeconfig (often `:6443`, in-cluster `:443`). Claw’s kube path adds those ports to `0.0.0.0/0` and treats L7 as the real allowlist. Claw DNS uses ports 53/5353 with `namespaceSelector: {}` (any namespace) so OpenShift `openshift-dns` and generic CoreDNS both work.
 
-### Option A: DNS + TCP 443 and 6443 to `0.0.0.0/0`
+### Option A: DNS + TCP 443 and 6443 to `0.0.0.0/0` (plus IPv6 `::/0` if dual-stack)
 
-- **Pro:** API load-balancer and PrivateLink IPs can change without NP edits. Same as claw. L7 host allowlist still 403s unknown CONNECT.
-- **Con:** If L7 is buggy, the proxy pod can speak HTTPS to the internet. `0.0.0.0/0` does not cover IPv6.
+- **Pro:** API load-balancer and PrivateLink IPs can change without NP edits. Same as claw. L7 host allowlist still 403s unknown CONNECT. Portable.
+- **Con:** If L7 is buggy, the proxy pod can speak HTTPS to the internet on those ports. `namespaceSelector: {}` for DNS is slightly loose (DNS ports only).
 
-### Option B: Resolve kubeconfig hostnames at reconcile time; NP `ipBlock` CIDRs
+**Decision:** Option A — DNS + TCP 443/6443 to `0.0.0.0/0` (and `::/0` if dual-stack). L7 is the real host allowlist. Copy claw DNS (53/5353, `namespaceSelector: {}`). No EgressFirewall on sandbox or proxy pods.
 
-- **Pro:** Proxy cannot talk to arbitrary IPs even if L7 fails.
-- **Con:** DNS TTL / NLB change → outage until re-reconcile. Need to handle multiple A records, IPv6, and `kubernetes.default.svc` cluster IPs. Painful on OpenShift.
-
-### Option C: OpenShift EgressFirewall / DNSNames on the **proxy** namespace or pod
-
-- **Pro:** Hostname-level egress at CNI.
-- **Con:** EF is namespace-scoped on OpenShift, not per-pod. Would affect the MCP server and any other workloads in the instance namespace if applied to the whole namespace. Per-pod FQDN policy needs Cilium (not the cluster default). Easy to get wrong; the umbrella analysis already rejected EF on **sandbox** pods together with the proxy.
-
-**Recommendation:** Option A for v1, plus IPv6 `::/0` on the same ports if the cluster is dual-stack. Document L7 as the real host allowlist. Do not put EF on sandbox pods.
+_Considered and rejected: Option B (reconcile-time ipBlocks — DNS TTL / NLB churn and OpenShift pain), Option C (namespace EF / DNSNames — not per-pod; hits MCP and other workloads in the instance namespace)._
 
 ---
 
@@ -109,133 +92,98 @@ Sandbox egress is proxy+DNS only. Proxy egress must reach every API server liste
 - **Pro:** No extra tunnel to “something on 6443.” Matches strip-then-inject: unknown host is 403.
 - **Con:** If a cluster is only reachable by IP and kubeconfig uses a hostname, `oc` still uses the hostname (fine). Unusual kubeconfigs that mix IP and hostname need the IP as a cluster server URL.
 
-### Option B: Also map resolved IPs to the same token (inject on IP CONNECT)
+**Decision:** Option A — allow IP CONNECT only when that `ip:port` is literally a kubeconfig `server`. Do not DNS-resolve and add IPs.
 
-- **Pro:** `curl https://<resolved-ip>` works like `oc`.
-- **Con:** DNS/IP drift; easier to accidentally allow CONNECT to a shared LB IP that fronts more than the API. More code.
-
-**Recommendation:** Option A. Allow IP CONNECT only when that `ip:port` is literally a kubeconfig `server`. Do not DNS-resolve and add IPs.
+_Considered and rejected: Option B (map resolved IPs into the token map — DNS drift and shared-LB CONNECT)._
 
 ---
 
 ## Q6: Deny kube subresources at L7 (`exec` / `attach` / `portforward` / `proxy`)?
 
-Investigation RBAC should already deny these. Bash can still *attempt* them. Claw kubernetes routes do not path-filter; `AllowedPaths` exists on the proxy for other injectors.
-
-### Option A: RBAC only
-
-- **Pro:** One source of truth. No denylist to maintain (`pods/ephemeralcontainers`, impersonate already stripped as headers, `nodes/proxy`, …).
-- **Con:** Mis-bound ClusterRole + `oc exec` is instant cluster-admin-adjacent in user namespaces.
+Investigation RBAC should already deny these. Bash can still *attempt* them. Claw kubernetes routes do not path-filter; `AllowedPaths` exists on the proxy for other injectors (allowlist, not denylist).
 
 ### Option B: Deny-list well-known mutating subresource path suffixes on kubernetes routes
 
 Reject paths matching `…/exec`, `…/attach`, `…/portforward`, `…/proxy` (and impersonate is already header-stripped).
 
 - **Pro:** Cheap belt given unconstrained bash. Survives a RoleBinding mistake.
-- **Con:** Path matching on the kube API is annoying (query strings, `?command=`, SPDY). False positives possible; must test `oc logs`, `oc get --watch`, `oc explain`.
+- **Con:** Path matching on the kube API is annoying (query strings, `?command=`, SPDY). False positives possible; must test `oc logs`, `oc get --watch`, `oc explain`. New code vs claw’s allowlist.
 
-**Recommendation:** Option B as a small denylist with tests for `logs`/`watch` still allowed. RBAC remains authoritative; this is belt-and-suspenders for the exact bypass we are designing against (`exec`).
+**Decision:** Option B — L7 denylist on kubernetes routes for `exec` / `attach` / `portforward` / `proxy`. RBAC remains authoritative. Tests must keep `logs` and `watch` allowed.
+
+_Considered and rejected: Option A (RBAC only — a mis-bound ClusterRole would make `oc exec` work through the proxy)._
 
 ---
 
 ## Q7: How much claw-operator proxy code to copy?
 
-Goal: own image, no claw-operator release coupling. claw’s `internal/proxy` also has gateway/pathPrefix reverse-proxy mode, Slack body rewrite, GCP token vending, oauth2, path_token, api_key.
-
-### Option A: Minimal — MITM CONNECT + kubernetes injector + `none` + StripAuthHeaders + route matching + CA pool
-
-- **Pro:** Smallest attack surface and test matrix. Enough for v1 kube and for a later curl class (`none` or `bearer` can be added then).
-- **Con:** Harder to diff against claw later; a later curl class may need `bearer` immediately.
+Goal: own image, no claw-operator release coupling. `claw-operator` is in-tree next door (`internal/proxy`): MITM CONNECT, injectors (kubernetes, bearer, none, gcp, oauth2, path_token, api_key), gateway/pathPrefix reverse-proxy mode, Slack body rewrite.
 
 ### Option B: Minimal + `bearer` injector now, still no gateway/Slack/GCP/oauth2
 
 - **Pro:** Route-list architecture is real in v1 (kubernetes + bearer types exist; v1 ConfigMap only enables kubernetes). Curl illustration stays honest.
 - **Con:** A few more files/tests unused in production v1.
 
-### Option C: Copy the claw package almost whole, delete Slack rewrite only
+**Decision:** Option B — copy MITM + kubernetes + bearer + none into `pkg/proxy`. Do not copy gateway mode, Slack, GCP, oauth2, path_token, or api_key. Keep claw’s CONNECT allow/deny and upstream TLS verification (never goproxy’s default `InsecureSkipVerify`). The operator must not import `pkg/proxy`.
 
-- **Pro:** Easier to pull claw bugfixes.
-- **Con:** Dead injectors, gateway mode we do not want (clients would skip CONNECT), GCP dummy-token behavior is confusing in this threat model.
-
-**Recommendation:** Option B. Copy MITM + kubernetes + bearer + none. Do not copy gateway mode, Slack, GCP, oauth2, path_token, api_key. Keep claw’s CONNECT allow/deny and upstream TLS verification (never goproxy’s default `InsecureSkipVerify`).
+_Considered and rejected: Option A (no bearer until a curl class — route-list types would be a lie in v1), Option C (copy almost whole — dead gateway/GCP/oauth2 surface)._
 
 ---
 
 ## Q8: Instance identity for labels and resource names?
 
-**Constrained by operator Q8** (decided): CR `metadata.name` is the instance id. Labels and annotations live under `cli-mcp.redhat.com`. As-built `tarsy.redhat.com/*` is dropped (nothing in production; no migration). Children named `cli-mcp-<name>`.
+**Constrained by operator Q8** (decided): CR `metadata.name` is the instance id. Labels and annotations live under `cli-mcp.redhat.com`. Children named so they fit 63 chars with CEL **name ≤ 44**.
 
 v1 is one instance. Selectors must not be a single shared `component=sandbox` so a later instance in the **same namespace** does not share NPs.
 
-When this question is resumed, the remaining work is proxy-specific labels, not a new domain:
+`cli-mcp-<name>-dummy-kubeconfig` does **not** fit (70 chars at name=44). Fold sandbox egress into the existing NP `cli-mcp-<name>-sandbox` instead of a second long name.
 
-### Option A: Follow operator Q8; proxy pods get `component=proxy`
+### Option A: Follow operator Q8; `component=proxy`; suffix names
 
 - `cli-mcp.redhat.com/instance=<CR name>` on MCP, sandbox, session Secrets, and proxy pods.
-- `cli-mcp.redhat.com/component=sandbox` \| `server` \| `proxy`.
-- Proxy Service / Deployment named `cli-mcp-proxy-<name>` or `cli-mcp-<name>-proxy` (pick one when implementing; must fit 63 chars with the sandbox SA suffix already reserved).
-- NPs and proxy ingress select **instance + component**. Session list/GC stays component+instance as the operator phase.
+- `cli-mcp.redhat.com/component=sandbox` \| `server` \| `proxy` (`ComponentProxy` does not exist yet; only `sandbox` and `server` are in `pkg/session`).
+- MITM proxy Deployment / Service / SA / NP: `cli-mcp-<name>-proxy` (same suffix pattern as `-sandbox`, `-client`, `-krp`).
+- CA Secret: `cli-mcp-<name>-proxy-ca`. Dummy ConfigMap: `cli-mcp-<name>-dummy`. Routes ConfigMap: `cli-mcp-<name>-routes`.
+- NPs select **instance + component**. Session list/GC stays component+instance. Sandbox egress folds into existing NP `cli-mcp-<name>-sandbox`.
 
-- **Pro:** One label domain. NP podSelectors are obvious. Two CRs in one namespace cannot share proxies.
-- **Con:** None beyond the operator phase already accepted.
+- **Pro:** One label domain. NP podSelectors are obvious. Two CRs in one namespace cannot share proxies. Stays inside CEL 44.
+- **Con:** Dummy ConfigMap name is slightly less obvious than `…-dummy-kubeconfig`.
 
-### Option B: Reuse a single `component=cli-mcp-sandbox` value and encode class in the value
+**Decision:** Option A — `component=proxy` and the suffix names above. Do not tighten CEL below 44.
 
-- **Pro:** No extra instance key.
-- **Con:** Breaks operator-phase meaning of `component=sandbox` (session manager, warm pool, idle GC). Rejected by operator Q8.
-
-### Option C: A separate `cli-mcp-class` label besides instance
-
-- **Pro:** Could distinguish class vs instance if we ever run two `oc` CRs.
-- **Con:** Two labels to document; CR name already is the instance id.
-
-**Recommendation:** Option A. Do not re-open `tarsy.redhat.com` or a shared component-only selector.
+_Considered and rejected: Option B (shared component-only selector — already rejected by operator Q8), Option C (extra `cli-mcp-class` label — CR name is the instance id)._
 
 ---
 
 ## Q9: What ServiceAccount do sandbox pods run as?
 
-**Constrained by operator Q12** (decided): dedicated sandbox SA, no RoleBindings, `automountServiceAccountToken: false`. Investigation tokens must not be the pod’s projected SA token. This question is kept so the proxy pass can confirm the SA name and that the investigation subject exists **only** as ClusterRoleBinding subjects whose tokens are minted into the proxy’s kubeconfig Secret.
+**Constrained by operator Q12** (decided and implemented): dedicated sandbox SA `cli-mcp-<name>-sandbox`, no RoleBindings, `automountServiceAccountToken: false`. Investigation tokens must not be the pod’s projected SA token.
+
+This question only confirms that the investigation subject exists **only** as ClusterRoleBinding subjects whose tokens are minted into the proxy’s kubeconfig Secret — and that we add a **MITM proxy** SA with the same shape (no RoleBindings, automount false). That SA is not the kube-rbac-proxy sidecar (sidecar uses the MCP pod SA `cli-mcp-<name>`).
 
 ### Option A: Dedicated `cli-mcp-<name>-sandbox` SA, no RoleBindings, `automountServiceAccountToken: false`
 
-- **Pro:** Clear split. Compromised sandbox gets no in-cluster identity. OpenShift still has an SA for SCC.
-- **Con:** One more object (already created in the operator phase).
+- **Pro:** Already shipped. Compromised sandbox gets no in-cluster identity. OpenShift still has an SA for SCC. Proxy SA `cli-mcp-<name>-proxy` follows the same rule (upstream auth is the kubeconfig mount).
+- **Con:** One more SA (proxy) — cheap.
 
-### Option B: Investigation SA on the pod with automount false; tokens only in the proxy kubeconfig
+**Decision:** Option A — keep `cli-mcp-<name>-sandbox`; add `cli-mcp-<name>-proxy` with no RoleBindings and automount false. Investigation tokens live only in the admin kubeconfig Secret on the proxy, never as a projected pod token.
 
-- **Pro:** Fewer SAs.
-- **Con:** Name implies the sandbox *is* the investigation identity. Accidental automount true (revert/bug) immediately projects a useful in-cluster token, bypassing the dummy kubeconfig. Operator Q12 already rejected this.
-
-### Option C: `automountServiceAccountToken: false` and empty `serviceAccountName` (default SA in namespace)
-
-- **Pro:** No extra SA.
-- **Con:** Namespace `default` SA is a footgun if anyone binds it. Less explicit. Operator Q12 already rejected this.
-
-**Recommendation:** Option A — same as operator Q12. Investigation SA exists only as the subject of ClusterRoleBindings whose tokens are minted into the proxy’s kubeconfig Secret (typically via External Secrets or equivalent), never mounted on sandbox pods.
+_Considered and rejected: Option B (investigation SA on the sandbox pod — operator Q12 already rejected this), Option C (namespace default SA — footgun if anyone binds it)._
 
 ---
 
 ## Q10: Proxy CA lifecycle?
 
-MITM requires a CA the dummy kubeconfig trusts. Claw generates a P-256 ECDSA CA once, stores it in a Secret, and never rotates unless the Secret is deleted.
+MITM requires a CA the dummy kubeconfig trusts. Claw generates a P-256 ECDSA CA once, stores it in a Secret, and never rotates unless the Secret is deleted. This operator’s HMAC Secret is the closer in-tree pattern: create-if-missing, **never overwrite** a present Secret (empty/wrong key stays `SecretKeysInvalid`).
 
 ### Option A: Generate-once (create-if-not-exists), 10-year lifetime, no automatic rotation
 
-- **Pro:** Same as claw. Dummy kubeconfig and running sandboxes stay valid. MCP replicas do not flip-flop CAs.
+- **Pro:** Same as HMAC. Dummy kubeconfig and running sandboxes stay valid. MCP/proxy replicas do not flip-flop CAs.
 - **Con:** Compromise of `ca.key` means forging API-looking certs to sandboxes (they can only talk to the proxy anyway). Rotation is a documented break-glass: delete CA Secret + dummy CM, bounce proxy, idle-GC sandboxes.
 
-### Option B: cert-manager (or OpenShift service CA)
+**Decision:** Option A — generate-once in `cli-mcp-<name>-proxy-ca` (P-256 ECDSA, IsCA, 10y). Never overwrite a present Secret. Empty `ca.crt`/`ca.key` → not Ready (`SecretKeysInvalid`), do not silently mint into a pre-created empty object.
 
-- **Pro:** Rotation/policy exists in platform.
-- **Con:** Service CA cannot sign arbitrary MITM leafs for `api.<cluster>`. cert-manager is another dependency in the instance namespace for one Secret.
-
-### Option C: New CA every MCP restart
-
-- **Pro:** Short-lived.
-- **Con:** Breaks warm pool and live sessions; multi-replica races.
-
-**Recommendation:** Option A. Generate-once in the CA Secret (**operator**, Q1). Copy claw’s CA template (IsCA, KeyUsageCertSign, ECDSA P-256).
+_Considered and rejected: Option B (cert-manager / service CA — cannot sign MITM leafs for `api.<cluster>`), Option C (new CA every restart — breaks warm pool and live sessions)._
 
 ---
 
@@ -243,22 +191,16 @@ MITM requires a CA the dummy kubeconfig trusts. Claw generates a P-256 ECDSA CA 
 
 An ExternalSecret (or equivalent) may rotate tokens. Claw stamps the Secret `resourceVersion` on the proxy Deployment to force a rollout; the proxy reads kubeconfig at **startup** only (no file watch).
 
-### Option A: Reloader / `secret.reloader.stakater.com` annotation in GitOps
-
-- **Pro:** No operator code. Common on OpenShift.
-- **Con:** Depends on Reloader being installed in the cluster (confirm). Dummy kubeconfig cluster *list* also needs refresh if servers were added — operator reconcile on an interval can rewrite dummy/routes; proxy still needs restart to reload tokens.
+This operator **already watches** Secrets named `cli-mcp-<name>-kubeconfig` (`mapSecret` / `instanceFromAdminSecret`) and stamps HMAC RV on the **MCP** pod template. Proxy can use the same pattern.
 
 ### Option B: Operator watches the Secret and patches the proxy Deployment annotation
 
-- **Pro:** Self-contained. Dummy + routes + proxy stay in lockstep.
-- **Con:** Operator needs patch on the proxy Deployment. More controller behavior (acceptable: Q1 already made the operator the owner).
+- **Pro:** Self-contained. Dummy + routes + proxy stay in lockstep. Matches HMAC RV on MCP. Secret watch already exists.
+- **Con:** Operator needs to apply the proxy Deployment (already in scope).
 
-### Option C: Proxy watches the kubeconfig file (inotify) and reloads
+**Decision:** Option B — stamp `cli-mcp.redhat.com/kubeconfig-resource-version` (and CA RV) on the proxy pod template; rewrite dummy + routes on the same reconcile. Do not assume Reloader.
 
-- **Pro:** No rollout.
-- **Con:** Reload races, token map mutex, not how claw works; more proxy complexity.
-
-**Recommendation:** Option B if Reloader is not already a standard in the target cluster; otherwise Option A plus the operator periodically rewriting dummy/routes. Default to **Option B** unless GitOps owners confirm Reloader. Tokens must not stay stale after rotation.
+_Considered and rejected: Option A (Reloader — not a required cluster install), Option C (inotify reload — races and extra proxy complexity)._
 
 ---
 
@@ -266,21 +208,68 @@ An ExternalSecret (or equivalent) may rotate tokens. Claw stamps the Secret `res
 
 If sandbox pods are created before egress NP exists, they have unrestricted egress (the instance namespace has no default-deny today). That window is the original bug.
 
-Operator Q5 moved warm pool to the operator; MCP still creates on-demand session pods. Both paths must honor this gate. Operator Q15 `Ready` should include proxy children in the proxy pass.
+MCP does **not** watch the CR (operator Q9) and will on-demand-create whenever it is running. Aggregate `Ready=false` does **not** stop that. Pool mutate today runs whenever `applyChildren` succeeds.
 
-### Option A: Do not create/claim sandbox pods until Ready proxy endpoints, dummy ConfigMap, and the four NPs are observed
+On upgrade from the current operator, assigned pods still mount the real Secret until DELETE / idle GC / CR delete (overlay leaves assigned pods). Applying sandbox egress NP immediately cuts their direct API path (fail-closed for replay even while the token sits on disk).
 
-- **Pro:** No open-egress sandbox even on first deploy / MCP crashloop.
-- **Con:** First `bash` call waits on proxy readiness (acceptable). Warm pool must not pre-create pods either until the same gate passes.
+### Option A: Operator-enforced gate — no pool mutate without dummy+egress NP; apply those children first; leave assigned pods on overlay
 
-### Option B: GitOps ordering only (proxy+NPs in the same Argo app, hope apply order is enough)
+- Apply CA, dummy, routes, proxy Service/Deployment, sandbox NP **with egress**, proxy NP **before** pool create and before relying on new MCP flags.
+- `reconcilePool(..., mutate)` stays false until dummy ConfigMap exists and the sandbox NP has egress.
+- Unassigned overlay rebuild picks up dummy+`HTTPS_PROXY`.
+- Assigned sessions keep the old spec until idle/DELETE (today’s overlay rule). Document the upgrade window: token may remain on disk in those pods; egress NP should already block direct API; through-proxy replay still strip-then-injects.
+- **Pro:** Matches two-writer reality. No MCP infra watch. Install cannot create open-egress sandboxes once P3 rolls out.
+- **Con:** Live assigned sessions during the first proxy upgrade keep a disk copy of the old Secret until idle GC. MCP replicas that have not rolled yet can still *attempt* Secret-mounted creates; with egress NP already on, those pods cannot reach the API except via a proxy they are not configured to use.
 
-- **Pro:** No extra code.
-- **Con:** Kubernetes does not give you transactional multi-resource apply. A race on first rollout is likely.
+**Decision:** Option A — operator gate on dummy+egress NP; do not kill assigned sessions on cutover. First-party can drain sessions before the catalog bump if they want a clean cutover.
 
-### Option C: Namespace default-deny NetworkPolicy in GitOps, then allow-lists
+_Considered and rejected: Option B (GitOps ordering only — MCP is not GitOps-created), Option C (namespace default-deny — easy to outage MCP and other workloads), Option D (scale MCP to 0 and delete assigned — hard-kills live bash)._
 
-- **Pro:** Even a buggy operator/MCP cannot create a sandbox with open egress.
-- **Con:** Default-deny in the instance namespace would break the MCP client, other MCP servers, observability, and anything else in that namespace unless carefully namespaced by podSelector. Easy to outage the whole namespace.
+---
 
-**Recommendation:** Option A. Gate both on-demand create and warm-pool replenish. Do not namespace-wide default-deny the instance namespace.
+## Q13: Does the CRD grow `spec.proxy`?
+
+Operator Q14 omitted `spec.proxy` so this design could shape it. Routes, CA, and dummy **must** be derived from the live kubeconfig + proxy CA (Q1). The proxy image is ours (`RELATED_IMAGE_PROXY`), same as MCP (`RELATED_IMAGE_SERVER`) — not a per-CR pin.
+
+### Option A: No spec fields. Hardcode proxy pod resources; image from operator env
+
+- **Pro:** Smallest CRD delta. No frozen injector/route API. Matches “admin does not hand-maintain the proxy Deployment.”
+- **Con:** Cannot set proxy CPU/memory per instance without a later CRD add.
+
+**Decision:** Option A — no `spec.proxy` / `spec.proxyContainer` in v1. Image from `RELATED_IMAGE_PROXY`. Proxy resources use DefaultConfig-like requests/limits. Additive `spec.proxyContainer` can wait until someone needs it. Do not add `spec.proxy.routes`.
+
+_Considered and rejected: Option B (`spec.proxyContainer` now — unused by most installs), Option C (full `spec.proxy` — freezes derived dummy/routes as admin YAML)._
+
+---
+
+## Q14: What does Ready do with a kubeconfig that has a key but is not token-only?
+
+Today Ready only checks Secret `cli-mcp-<name>-kubeconfig` exists with a non-empty `kubeconfig` key. It does **not** parse YAML. The proxy **must** parse: reject client certs / exec / auth-provider / basic auth; build dummy + routes.
+
+A present-but-unusable kubeconfig would otherwise look Ready while every `oc` through the proxy fails closed — or worse, if we skipped validation, we might mount a dummy that still embeds a client cert.
+
+### Option A: Parse in Ready. New reason `KubeconfigInvalid` (do not go Ready)
+
+- **Pro:** Fail closed at the instance gate. Matches HMAC empty-key → `SecretKeysInvalid`. Operators and GitOps see why bash cannot `oc`.
+- **Con:** Ready now depends on kubeconfig schema, not only key presence (operator Q15 originally avoided parse). Must not log tokens.
+
+**Decision:** Option A — parse kubeconfig in Ready. Missing/empty key stays `SecretKeysInvalid`. Unparseable or non-token-only → `KubeconfigInvalid`. Still no TLS cert parse. Never emit token material in condition messages.
+
+_Considered and rejected: Option B (vague `ChildrenNotReady`), Option C (Ready with a broken kubeconfig — sandboxes fail at runtime)._
+
+---
+
+## Q15: Does local `cmd/server` still run without the proxy?
+
+Operator Q6/Q9: `cmd/server` stays flag-driven without the operator (unit tests, `go run`, kind without a CR). In-cluster after P3, the operator always passes dummy + proxy URL.
+
+### Option A: Dual path — XOR flags; dummy+proxy if set, else today’s Secret mount
+
+Today `--kubeconfig-secret` is required. Change validation to **exactly one** of: `--kubeconfig-secret`, or `--dummy-kubeconfig-configmap` **and** `--proxy-url`. Passing both is an error (no silent Secret fallback).
+
+- **Pro:** Existing `pkg/session` / MCP tests keep working. Local `oc` against a real cluster still possible. In-cluster operator always takes the dummy path.
+- **Con:** Two volume shapes in `BuildBasePodSpec`. Tests must cover both. A mis-wired operator that omits the new flags would fail MCP startup (good) rather than mount the real Secret.
+
+**Decision:** Option A — XOR flags. P3 always passes dummy+proxy URL and never `--kubeconfig-secret`. Empty `RELATED_IMAGE_PROXY` is apply-fail, not Secret fallback.
+
+_Considered and rejected: Option B (always require dummy — breaks local/unit tests), Option C (delete Secret-mount code — same as B for tests)._
