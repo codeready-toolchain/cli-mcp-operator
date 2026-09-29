@@ -41,7 +41,7 @@ This pass adds a fourth image — **`cli-mcp-proxy`** — a MITM forward proxy *
 11. **Operator owns instance infrastructure; MCP does not.** No ensure-loop in `cmd/server`. MCP does not watch the CR. The operator renders flags onto the MCP Deployment, including dummy ConfigMap name and proxy Service DNS.
 12. **`spec.proxy.targets` is the proxy API (Q1).** Not `spec.sandbox.type`, not top-level `credentials`. `RELATED_IMAGE_PROXY`, proxy `replicas: 1` with `maxUnavailable: 0` / `maxSurge: 1` (Q11). Optional kubernetes `secretName`; default conventional Secret name.
 13. **Copy existing operator patterns** — CA Secret is HMAC generate-once (never overwrite a present Secret; empty keys → `SecretKeysInvalid`). Investigation kubeconfig / routes ConfigMap / CA rotation stamps those objects’ `resourceVersion` on the **proxy** pod template (same as HMAC / krp). Overlay hash for **unassigned** sandboxes includes a fingerprint of dummy kubeconfig bytes, `ca.crt` bytes, and proxy env — not the investigation Secret’s `resourceVersion` (token rotation must not rebuild the pool). Assigned sandboxes are not deleted on spec change (Q11). `subPath` means pool pods will not pick up a rewritten dummy/CA unless recreated.
-14. **Operator does not mint investigation tokens or ClusterRoles.** Admin provides the kubeconfig Secret (default name or `secretName`). The injected identity must not have `pods/exec`, secrets get, impersonate, VM mutate, or `nodes/proxy`. First-party ClusterRole YAML is a catalog-consumer follow-up, not this operator API.
+14. **Operator does not mint investigation tokens or ClusterRoles.** Admin provides the kubeconfig Secret (default name or `secretName`). **Guidance for whoever binds that identity** (the operator does not check it): `get`/`list`/`watch` are fine, on whichever resources that user chooses to grant. Do not grant verbs that let the agent leave the sandbox network: `pods/exec`, `pods/attach`, `pods/portforward`, create that starts a container, impersonate, VM mutate, `nodes/proxy`. If those exec-family verbs are granted anyway, the proxy still denies URL paths `…/exec`, `…/attach`, `…/portforward`, and `…/proxy`. First-party ClusterRole YAML is a catalog-consumer follow-up, not this operator API.
 15. **`cmd/server` remains runnable without the operator.** Local/dev without `--proxy-service` / `--proxy-ca-secret` / dummy ConfigMap still mounts `--kubeconfig-secret` and does not gate on NPs. In-cluster the operator always passes the proxy flags and never mounts the real Secret on sandboxes.
 16. **Compatible CR updates apply immediately (Q11).** Union (add allowlist / add kubeconfig `server`) must not drain sessions or take `/mcp` down. Narrowing may break `oc` in assigned pods; bash stays. Drain the proxy on SIGTERM; do not wrap sandbox `oc`/`curl` with retries.
 
@@ -138,7 +138,7 @@ cli-mcp-proxy (MITM)
   inject investigation Bearer for that hostname:port
   │
   ▼
-kube API server(s)   RBAC = investigation SA (get/list/watch, no exec)
+kube API server(s)   RBAC = user's investigation SA (guidance: reads are their choice; no exec, no create)
 ```
 
 ```mermaid
@@ -181,7 +181,7 @@ On `CONNECT` and on each MITM’d request:
 | Step | Behavior |
 |---|---|
 | Host allowlist | Exact `host:port` on CONNECT **and** on plaintext HTTP proxy requests (`OnRequest`). Operator always writes `host:port` into the route JSON (kubeconfig `server` URL; allowlist bare host → `:443`). IPs only if that `server` / `domain` is already an IP ([Q8](credential-proxy-questions.md)). Unknown host → 403, no tunnel. **Not** claw `MatchRoute`: no leading-dot suffix, no wildcards, no “bare host matches any port.” IPv6 literals use `net.JoinHostPort`. |
-| MITM | **All** v1 routes MITM (kubernetes inject **and** allowlist `none`). Do **not** copy claw’s `none` without `AllowedPaths` → direct CONNECT tunnel (that would skip strip). Leaf certs signed by the proxy CA. Dummy kubeconfig (kubernetes targets) uses that CA. `curl` trusts it via `SSL_CERT_FILE` (replaces the process default bundle — correct, because sandbox TLS only goes through this MITM). |
+| MITM | **All** v1 routes MITM (kubernetes inject **and** allowlist `none`). Do **not** copy claw’s `none` without `AllowedPaths` → direct CONNECT tunnel (that would skip strip). Leaf certs signed by the proxy CA. Dummy kubeconfig (kubernetes targets) uses that CA. `curl` trusts it via `SSL_CERT_FILE`, which replaces the process default bundle on purpose: sandbox TLS only goes through this MITM, so the file is the proxy CA only. The readiness probe is plain HTTP `curl http://127.0.0.1:8090/health` (`NO_PROXY` includes loopback), so it never needs a CA and is not a reason to append the system bundle. |
 | Strip | Before inject: `Authorization`, `X-Api-Key`, `Proxy-Authorization`, `Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`, and any `Impersonate-Extra-*`. Allowlist injects nothing after strip. Do not copy claw’s `X-Goog-Api-Key` / GCP token-vending short-circuit. |
 | Inject | `kubernetes` injector maps `host:port` → token from the **real** kubeconfig, then deny path suffixes `…/exec` `…/attach` `…/portforward` `…/proxy` on the URL **path** (canonicalize with `path.Clean`; ignore query). Tests keep `logs` / `watch` / `explain` allowed ([Q9](credential-proxy-questions.md)). `allowlist` uses injector `none` (no path denylist). |
 | Upstream TLS | Kubernetes routes: proxy verifies the real API server using each cluster’s original CA (`caCert` on the route). Allowlist routes: system/public CA pool. Never goproxy’s default `InsecureSkipVerify`. |
@@ -235,7 +235,7 @@ Ready parses this Secret token-only ([Q4](credential-proxy-questions.md)).
 | Identity | Where | Purpose |
 |---|---|---|
 | `cli-mcp-<name>` SA | MCP server pod (+ kube-rbac-proxy sidecar) | Sandbox pods plus session auth Secret **create/delete** (no secret get/list/watch). In-cluster client. **Not** used for investigation API calls. Fail-closed GET Endpoints + sandbox NetworkPolicy. |
-| Investigation tokens | Admin kubeconfig Secret on the **proxy** only (default `cli-mcp-<name>-kubeconfig`, or kubernetes `secretName`) | get/list/watch on every cluster `server` in that kubeconfig. **No `pods/exec`**, no secrets, no impersonate, no VM start/stop, no `nodes/proxy`. Operator **Gets** the Secret; it does not mint tokens or create it. |
+| Investigation tokens | Admin kubeconfig Secret on the **proxy** only (default `cli-mcp-<name>-kubeconfig`, or kubernetes `secretName`) | User's binding. Guidance: `get`/`list`/`watch` on the resources they choose. Do not grant `pods/exec` / `attach` / `portforward`, create that starts a container, impersonate, VM mutate, or `nodes/proxy`. Proxy path denylist still blocks `…/exec` `…/attach` `…/portforward` `…/proxy`. Operator **Gets** the Secret; it does not mint tokens or create it. |
 | Sandbox pod SA `cli-mcp-<name>-sandbox` | Sandbox pods | Already shipped. **No RoleBindings. `automountServiceAccountToken: false`.** |
 | Proxy pod SA `cli-mcp-<name>-proxy` | Proxy pods | Volume mounts only. **No RoleBindings. `automountServiceAccountToken: false`.** |
 
@@ -279,7 +279,7 @@ Same reconciler, same CR. The kubeconfig Secret is **not** a child (`ownerRef` u
 | NetworkPolicy `cli-mcp-<name>-proxy` | Proxy ingress `:8080` from this instance’s sandboxes. **`policyTypes: [Ingress]` only** — do not add `Egress` (that would default-deny proxy egress). |
 | NetworkPolicy `cli-mcp-<name>-sandbox` | **Existing** — keep ingress `:8090`; **add** egress to this proxy + DNS; `policyTypes` must include `Ingress` **and** `Egress`. |
 
-`manager-namespaced-role` already has secrets, configmaps, networkpolicies, deployments, services, serviceaccounts (ClusterRole `manager-role` is CRs + auth-delegator CRB only). CSV `relatedImages` + `RELATED_IMAGE_PROXY` on the operator Deployment.
+`manager-namespaced-role` already has secrets, configmaps, networkpolicies (including `get`), deployments, services, and serviceaccounts. It has no core `endpoints` rule. The API server rejects a Role that grants a verb the operator does not already hold — the same check that required `climcpinstances/mcp` on the operator before Role `cli-mcp-<name>-client` could be applied. In the cutover PR, add `get` on core `endpoints` with no `resourceNames` to `config/rbac/namespaced_role.yaml` and to CSV `permissions` before `applyMCPRole` grants the named subset (`cli-mcp-<name>-proxy`, and `cli-mcp-<name>-sandbox` for the NetworkPolicy). The operator’s own pool-gate Get uses that unnamed verb. `get` on `networkpolicies` is already held with no `resourceNames`, so the named MCP rule does not need a new operator rule. Leave `climcpinstances/mcp` `get`/`create`/`delete` on ClusterRole `manager-role` and CSV `clusterPermissions`. CSV `relatedImages` + `RELATED_IMAGE_PROXY` on the operator Deployment.
 
 Proxy children get `ownerRef` → CR like HMAC. The instance finalizer does not special-case them (scale MCP, delete sandboxes, then GC). Never `ownerRef` the admin kubeconfig Secret.
 
@@ -299,7 +299,7 @@ Shared builder `BuildBasePodSpec` (operator pool and MCP on-demand):
 | kubeconfig volume | Dummy ConfigMap **`subPath`** `kubeconfig` **if** a kubernetes target exists; omit for allowlist-only |
 | Proxy CA volume | Secret `cli-mcp-<name>-proxy-ca` **`subPath`** `ca.crt` for `SSL_CERT_FILE` (assigned pods must not see a later CA rewrite) |
 | Env | `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, and `https_proxy` = `http://cli-mcp-<name>-proxy:8080` (port 8080 is an operator/MCP constant). `NO_PROXY` and `no_proxy` = `127.0.0.1,localhost,::1`. curl ignores uppercase `HTTP_PROXY` and prefers lowercase `https_proxy` / `no_proxy` over the uppercase names, so the lowercase copies are set to the same values. `SSL_CERT_FILE` (and `REQUESTS_CA_BUNDLE` to the same file if we set it). `KUBECONFIG=/config/kubeconfig` only with a kubernetes target. Reserved names (operator wins): add `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `http_proxy`, `https_proxy`, `no_proxy`, `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` next to `KUBECONFIG` / `HOME` / `SANDBOX_AUTH_TOKEN`. **Do not** put `.svc`, `.cluster.local`, the proxy Service name, or API hostnames in `NO_PROXY` / `no_proxy`. |
-| Readiness | Unchanged: exec `curl` to `127.0.0.1:8090/health` |
+| Readiness | Unchanged: exec `curl -fsS --max-time 1 http://127.0.0.1:8090/health`. Plain HTTP to loopback, so `SSL_CERT_FILE` replacing the system bundle does not affect the probe. |
 
 `NO_PROXY` is a load-bearing footgun: a broad cluster-local list would let `oc` reach `kubernetes.default.svc` directly.
 
@@ -374,7 +374,7 @@ MCP on-demand create (and claim of unassigned) GETs corev1 **Endpoints** of `--p
 
 v1 uses the Endpoints API (same name as the Service), not EndpointSlices — extra RBAC and a Q5 change.
 
-MCP Role: `get` on `endpoints` (core) and `networkpolicies` (`networking.k8s.io`); still no secret get.
+MCP Role: `get` on `endpoints` (core) with `resourceNames: [cli-mcp-<name>-proxy]`, and `get` on `networkpolicies` (`networking.k8s.io`) with `resourceNames: [cli-mcp-<name>-sandbox]`. Still no secret get, and no `list`/`watch`. Those are the only two objects the fail-closed GETs read. The operator’s `endpoints` `get` on `manager-namespaced-role` and CSV `permissions` has no `resourceNames`: one Role covers every instance, which is what line 371 reads and what the escalation check requires in order to grant this named subset (same shape as `climcpinstances/mcp` on `manager-role` covering the client Role’s `resourceNames`). Apply that operator rule before `applyMCPRole`.
 
 ### What does not change
 
@@ -396,7 +396,7 @@ MCP Role: `get` on `endpoints` (core) and `networkpolicies` (`networking.k8s.io`
 | **Strip-then-inject** | Stolen `Authorization` cannot survive the hop to the API. |
 | **Proxy ingress NP** | Only this instance’s sandbox pods may use the proxy. |
 | **Sandbox egress NP** | Sandboxes cannot skip the proxy. |
-| **Investigation RBAC** | Last line if injection works as designed: even “successful” API calls are view-only, no exec. Not an operator-managed ClusterRole. |
+| **Investigation RBAC** | Guidance for the user's binding, not an operator check. `get`/`list`/`watch` are fine on the resources they choose. Do not grant `pods/exec` / `attach` / `portforward`, create that starts a container, impersonate, VM mutate, or `nodes/proxy` (those leave the sandbox network). The proxy still denies the exec-family URL paths if those verbs are granted. |
 
 ## Implementation Plan
 
@@ -433,7 +433,7 @@ This PR does not touch the operator or sandbox mounts (they still mount the real
 Depends on PR 1. **Breaks** in-cluster sandbox `oc` without the proxy. Leaves `/mcp` bash working. Kind e2e `kubeconfig=unused` must become a minimal token-only kubeconfig.
 
 - Operator: `spec.proxy.targets` required; CEL above; CA generate-once; parse **effective** kubeconfig Secret when a kubernetes target exists; dummy+routes ConfigMap; proxy SA/Deployment/Service/NPs; sandbox NP gains Egress + DNS; unmount real Secret from `BuildBasePodSpec`; dummy/CA **`subPath`**; `RELATED_IMAGE_PROXY`; stamp routes ConfigMap + kubeconfig + CA RVs; proxy `RollingUpdate` `maxUnavailable: 0` / `maxSurge: 1` (do not leave `RollingUpdate` nil); SIGTERM drain; overlay fingerprint includes dummy/`ca.crt`/proxy env; watch effective Secret name; pool gate ([Q5](credential-proxy-questions.md)); Ready ([Q4](credential-proxy-questions.md)); sample CR gains kubernetes target; `poolSandboxConfig` must not mount the admin Secret.
-- MCP flags: `--dummy-kubeconfig-configmap`, `--proxy-service`, `--proxy-ca-secret`; stop passing `--kubeconfig-secret` in-cluster; reserved proxy env; fail-closed GET Endpoints + NP; MCP Role get endpoints + networkpolicies (still no secret get).
+- MCP flags: `--dummy-kubeconfig-configmap`, `--proxy-service`, `--proxy-ca-secret`; stop passing `--kubeconfig-secret` in-cluster; reserved proxy env; fail-closed GET Endpoints + NP. MCP Role `get` is `resourceNames`-scoped to `cli-mcp-<name>-proxy` (Endpoints) and `cli-mcp-<name>-sandbox` (NetworkPolicy), still no secret get, only after unnamed `get` on core `endpoints` is on `namespaced_role.yaml` and CSV `permissions`. Do not move `climcpinstances/mcp` off `manager-role`.
 - Local without proxy flags: still mount `--kubeconfig-secret` (no gate).
 - **Test tips:** envtest for children, `KubeconfigInvalid`, HMAC-like CA generate-once, NP selectors cannot match another instance, sandbox DNS egress is kube-system / openshift-dns / `169.254.20.10` not `0.0.0.0/0` on 53, pool does not create before proxy endpoints, MCP Role verbs, `secretName` watch enqueues, overlay hash does not change on token-only Secret RV, `NormalizeDeployment` does not reset proxy surge. `pkg/session` golden pod spec (dummy volume, env, automount, reserved env, allowlist-only omits kubeconfig). Update Kind Ready fixture to a minimal token-only kubeconfig.
 - **Done when:** a CR with a valid token-only kubeconfig gets dummy + proxy + egress lock, goes Ready, and sandbox pods do not mount the admin Secret. An allowlist-only CR goes Ready with no kubeconfig Secret and no dummy mount.
@@ -447,7 +447,7 @@ Defer if Kind cannot cheaply run a fake API + MITM; say so and keep envtest/unit
 
 ### Follow-up — First-party catalog (other repo, not this operator)
 
-Investigation ClusterRole + bindings + kubeconfig Secret contents (no `view` if it includes secrets get; no exec). Drop any leftover “sandbox has unrestricted egress” assumptions. Wire a production/stage MCP client only after PR 2/3 isolation checks pass. Not a `CliMcpInstance` API change.
+Investigation ClusterRole + bindings + kubeconfig Secret contents, following the guidance above: grant the `get`/`list`/`watch` resources the product needs; withhold `pods/exec` / `attach` / `portforward`, create that starts a container, impersonate, VM mutate, and `nodes/proxy`. Drop any leftover “sandbox has unrestricted egress” assumptions. Wire a production/stage MCP client only after PR 2/3 isolation checks pass. Not a `CliMcpInstance` API change.
 
 ## Decisions
 
