@@ -258,6 +258,14 @@ func TestManagerRoleIsCRDOnly(t *testing.T) {
 	assert.Empty(t, createNames)
 	assert.ElementsMatch(t, []string{"get", "update", "patch"}, namedWriteVerbs)
 	assert.Equal(t, []string{authDelegatorCRBName}, namedWriteNames)
+
+	var mcpVerbs []string
+	for _, rule := range role.Rules {
+		if slices.Contains(rule.Resources, "climcpinstances/mcp") {
+			mcpVerbs = append(mcpVerbs, rule.Verbs...)
+		}
+	}
+	assert.ElementsMatch(t, []string{"get", "create", "delete"}, mcpVerbs)
 }
 
 func TestNamespacedRoleHasChildResources(t *testing.T) {

@@ -25,6 +25,14 @@ rules:
 - apiGroups:
   - cli-mcp.redhat.com
   resources:
+  - climcpinstances/mcp
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - cli-mcp.redhat.com
+  resources:
   - climcpinstances/status
   verbs:
   - get

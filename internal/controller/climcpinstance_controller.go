@@ -54,6 +54,9 @@ type CliMcpInstanceReconciler struct {
 // ClusterRole. bind, unscoped CRB create, and named CRB writes are
 // clusterPermissions only.
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances,verbs=get;list;watch;create;update;patch;delete
+// Privilege escalation: Role cli-mcp-<name>-client grants climcpinstances/mcp.
+// Holding climcpinstances without the subresource is not enough to apply that Role.
+// +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/mcp,verbs=get;create;delete
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cli-mcp.redhat.com,resources=climcpinstances/finalizers,verbs=update
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames="system:auth-delegator",verbs=bind

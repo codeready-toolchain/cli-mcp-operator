@@ -485,6 +485,79 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		expectForbidden(asOperator.List(ctx, &list))
 	})
 
+	It("lets a manager-role SA apply the client Role without RBAC escalation", func() {
+		managerRules := loadRoleYAML(GinkgoTB(), filepath.Join("..", "..", "config", "rbac", "role.yaml"))
+		nsRules := loadRoleYAML(GinkgoTB(), filepath.Join("..", "..", "config", "rbac", "namespaced_role.yaml"))
+
+		opRole := &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-manager-role-mcp"},
+			Rules:      managerRules.Rules,
+		}
+		Expect(k8sClient.Create(ctx, opRole)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, opRole) })
+
+		childRole := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-manager-namespaced", Namespace: ns.Name},
+			Rules:      nsRules.Rules,
+		}
+		Expect(k8sClient.Create(ctx, childRole)).To(Succeed())
+
+		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name:      "manager-mcp",
+			Namespace: ns.Name,
+		}}
+		Expect(k8sClient.Create(ctx, sa)).To(Succeed())
+
+		saCRB := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-manager-mcp"},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     opRole.Name,
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      sa.Name,
+				Namespace: ns.Name,
+			}},
+		}
+		Expect(k8sClient.Create(ctx, saCRB)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, saCRB) })
+
+		saRB := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: ns.Name + "-manager-mcp", Namespace: ns.Name},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     childRole.Name,
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      sa.Name,
+				Namespace: ns.Name,
+			}},
+		}
+		Expect(k8sClient.Create(ctx, saRB)).To(Succeed())
+
+		impCfg := rest.CopyConfig(cfg)
+		impCfg.Impersonate = rest.ImpersonationConfig{
+			UserName: "system:serviceaccount:" + ns.Name + ":" + sa.Name,
+			Groups: []string{
+				"system:serviceaccounts",
+				"system:serviceaccounts:" + ns.Name,
+				"system:authenticated",
+			},
+		}
+		asOperator, err := client.New(impCfg, client.Options{Scheme: k8sClient.Scheme()})
+		Expect(err).NotTo(HaveOccurred())
+
+		created := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: clientSAName("oc"), Namespace: ns.Name},
+			Rules:      clientRoleRules("oc"),
+		}
+		Expect(asOperator.Create(ctx, created)).To(Succeed())
+	})
+
 	It("isolates client RBAC and kube-rbac-proxy config across instances", func() {
 		awsNN := types.NamespacedName{Name: "aws", Namespace: ns.Name}
 		createAdminSecretsFor(ctx, ns.Name, "oc")
