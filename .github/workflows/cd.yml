@@ -91,7 +91,9 @@ jobs:
           go-version-file: go.mod
 
       - name: Set image tags
-        run: echo "COMMIT_SHORT_SHA=$(git rev-parse --short ${GITHUB_SHA})" >> "${GITHUB_ENV}"
+        run: |
+          echo "COMMIT_SHORT_SHA=$(git rev-parse --short ${GITHUB_SHA})" >> "${GITHUB_ENV}"
+          echo "BUNDLE_VERSION=$(make -s --no-print-directory print-csv-version)" >> "${GITHUB_ENV}"
 
       - name: Generate bundle with SHA-tagged relatedImages
         run: make generate-cd-release-manifests GIT_SHORT_SHA="${COMMIT_SHORT_SHA}"
@@ -108,7 +110,7 @@ jobs:
         uses: redhat-actions/buildah-build@v2
         with:
           image: codeready-toolchain/cli-mcp-operator-bundle
-          tags: latest ${{ env.COMMIT_SHORT_SHA }} v0.0.1
+          tags: latest ${{ env.COMMIT_SHORT_SHA }} v${{ env.BUNDLE_VERSION }}
           containerfiles: |
             bundle.Dockerfile
           platforms: linux/amd64
@@ -129,7 +131,7 @@ jobs:
         uses: redhat-actions/buildah-build@v2
         with:
           image: codeready-toolchain/cli-mcp-operator-catalog
-          tags: latest ${{ env.COMMIT_SHORT_SHA }} v0.0.1
+          tags: latest ${{ env.COMMIT_SHORT_SHA }} v${{ env.BUNDLE_VERSION }}
           containerfiles: |
             catalog.Dockerfile
           platforms: linux/amd64
