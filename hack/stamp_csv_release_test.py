@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-commit CSV version, replaces, and skipRange for catalog publish."""
+"""Per-commit CSV version and skipRange for catalog publish."""
 
 from __future__ import annotations
 
@@ -25,33 +25,25 @@ spec:
 
 class StampCsvReleaseTest(unittest.TestCase):
     def test_version_matches_host_operator_scheme(self) -> None:
-        nxt, prev = mod.release_versions(42, "abcdef1", "1234567")
-        self.assertEqual(nxt, "0.0.42-commit-abcdef1")
-        self.assertEqual(prev, "0.0.41-commit-1234567")
+        self.assertEqual(mod.release_version(42, "abcdef1"), "0.0.42-commit-abcdef1")
 
-    def test_stamps_name_replaces_skiprange_and_is_idempotent(self) -> None:
-        got = mod.apply_release(SAMPLE, "0.0.42-commit-abcdef1", "0.0.41-commit-1234567")
-        self.assertIn("\n  name: cli-mcp-operator.v0.0.42-commit-abcdef1\n", got)
-        self.assertIn("\n    olm.skipRange: '<0.0.42-commit-abcdef1'\n", got)
-        self.assertIn("\n  replaces: cli-mcp-operator.v0.0.41-commit-1234567\n", got)
-        self.assertIn("\n  version: 0.0.42-commit-abcdef1\n", got)
-        self.assertEqual(
-            mod.apply_release(got, "0.0.42-commit-abcdef1", "0.0.41-commit-1234567"),
-            got,
-        )
+    def test_stamps_name_skiprange_and_is_idempotent(self) -> None:
+        version = "0.0.42-commit-abcdef1"
+        got = mod.apply_release(SAMPLE, version)
+        self.assertIn(f"\n  name: cli-mcp-operator.v{version}\n", got)
+        self.assertIn(f"\n    olm.skipRange: '>=0.0.0 <{version}'\n", got)
+        self.assertNotIn("replaces:", got)
+        self.assertIn(f"\n  version: {version}\n", got)
+        self.assertEqual(mod.apply_release(got, version), got)
 
     def test_leaves_example_instance_name(self) -> None:
         sample = SAMPLE.replace(
             "    capabilities: Basic Install\n",
             '    capabilities: Basic Install\n            "name": "oc"\n',
         )
-        got = mod.apply_release(sample, "0.0.2-commit-abcdef1", "0.0.1-commit-1234567")
+        got = mod.apply_release(sample, "0.0.2-commit-abcdef1")
         self.assertIn('"name": "oc"', got)
         self.assertEqual(got.count("cli-mcp-operator.v0.0.2-commit-abcdef1"), 1)
-
-    def test_rejects_first_commit(self) -> None:
-        with self.assertRaises(SystemExit):
-            mod.release_versions(1, "abcdef1", "1234567")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression: catalog FBC must include package + channel, not only the bundle."""
+"""Regression: catalog FBC must include package, channel, and skipRange."""
 
 from __future__ import annotations
 
@@ -36,7 +36,8 @@ class ComposeCatalogTest(unittest.TestCase):
         self.assertIn("schema: olm.channel", got)
         self.assertIn("package: cli-mcp-operator", got)
         self.assertIn("name: alpha", got)
-        self.assertIn("  - name: cli-mcp-operator.v0.0.1", got)
+        self.assertIn("  - name: cli-mcp-operator.v0.0.1\n", got)
+        self.assertIn('    skipRange: ">=0.0.0 <0.0.1"\n', got)
         self.assertIn("schema: olm.bundle", got)
         self.assertIn(
             "image: quay.io/codeready-toolchain/cli-mcp-operator-bundle:b788df3",
@@ -46,8 +47,22 @@ class ComposeCatalogTest(unittest.TestCase):
     def test_reads_bundle_name_from_render_not_hardcoded_version(self) -> None:
         rendered = RENDERED.replace("cli-mcp-operator.v0.0.1", "cli-mcp-operator.v1.2.3")
         got = mod.compose_catalog(rendered, "alpha")
-        self.assertIn("  - name: cli-mcp-operator.v1.2.3", got)
+        self.assertIn("  - name: cli-mcp-operator.v1.2.3\n", got)
+        self.assertIn('    skipRange: ">=0.0.0 <1.2.3"\n', got)
         self.assertNotIn("cli-mcp-operator.v0.0.1", got)
+
+    def test_skiprange_uses_commit_version_from_bundle_name(self) -> None:
+        version = "0.0.42-commit-abcdef1"
+        rendered = RENDERED.replace("cli-mcp-operator.v0.0.1", f"cli-mcp-operator.v{version}")
+        got = mod.compose_catalog(rendered, "alpha")
+        self.assertIn(f"  - name: cli-mcp-operator.v{version}\n", got)
+        self.assertIn(f'    skipRange: ">=0.0.0 <{version}"\n', got)
+
+    def test_aborts_when_bundle_name_has_no_version(self) -> None:
+        rendered = RENDERED.replace("name: cli-mcp-operator.v0.0.1", "name: cli-mcp-operator")
+        with self.assertRaises(SystemExit) as ctx:
+            mod.compose_catalog(rendered, "alpha")
+        self.assertIn("must start with", str(ctx.exception))
 
     def test_aborts_on_bundle_only_missing_package_fields(self) -> None:
         with self.assertRaises(SystemExit) as ctx:

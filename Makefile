@@ -5,7 +5,8 @@ SANDBOX_IMG ?= quay.io/codeready-toolchain/cli-mcp-sandbox:latest
 KUBE_RBAC_PROXY_IMG ?= quay.io/brancz/kube-rbac-proxy:v0.19.1
 
 # VERSION is the committed bundle CSV. Catalog CD rewrites name, version,
-# replaces, and skipRange from git history (hack/stamp-csv-release.py).
+# and olm.skipRange from git history (hack/stamp-csv-release.py). The FBC
+# channel skipRange is written by hack/compose-catalog.py.
 VERSION ?= 0.0.1
 
 CHANNELS ?= alpha
