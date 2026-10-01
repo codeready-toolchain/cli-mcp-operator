@@ -2,6 +2,7 @@
 IMG ?= cli-mcp-operator:latest
 SERVER_IMG ?= quay.io/codeready-toolchain/cli-mcp-server:latest
 SANDBOX_IMG ?= quay.io/codeready-toolchain/cli-mcp-sandbox:latest
+PROXY_IMG ?= quay.io/codeready-toolchain/cli-mcp-proxy:latest
 KUBE_RBAC_PROXY_IMG ?= quay.io/brancz/kube-rbac-proxy:v0.19.1
 
 # VERSION is the committed bundle CSV. Catalog CD rewrites name, version,
@@ -60,7 +61,7 @@ GO_PACKAGE_REPO_NAME ?= cli-mcp-operator
 GO_PACKAGE_PATH ?= github.com/${GO_PACKAGE_ORG_NAME}/${GO_PACKAGE_REPO_NAME}
 LDFLAGS = -X ${GO_PACKAGE_PATH}/pkg/version.commitOverride=${GIT_COMMIT_ID} -X ${GO_PACKAGE_PATH}/pkg/version.BuildTime=${BUILD_TIME}
 
-# controller-gen must not scan pkg/ (data plane) or cmd/server / cmd/agent.
+# controller-gen must not scan pkg/ (data plane) or cmd/server / cmd/agent / cmd/proxy.
 CONTROLLER_GEN_PATHS = paths="./api/..." paths="./internal/..." paths="./cmd/operator/..."
 
 .PHONY: all
@@ -138,7 +139,7 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration.
 ##@ Build
 
 .PHONY: build
-build: build-operator build-server build-agent ## Build manager + server + agent.
+build: build-operator build-server build-agent build-proxy ## Build manager + server + agent + proxy.
 
 .PHONY: build-operator
 build-operator: ## Build the operator manager binary (bin/manager).
@@ -156,6 +157,12 @@ build-agent: ## Build the sandbox agent binary.
 	@echo "Building agent (commit: $(GIT_COMMIT_ID_SHORT))..."
 	@mkdir -p bin
 	go build -ldflags "$(LDFLAGS)" -o bin/agent -v ./cmd/agent
+
+.PHONY: build-proxy
+build-proxy: ## Build the credential proxy binary.
+	@echo "Building proxy (commit: $(GIT_COMMIT_ID_SHORT))..."
+	@mkdir -p bin
+	go build -ldflags "$(LDFLAGS)" -o bin/proxy -v ./cmd/proxy
 
 .PHONY: run
 run: manifests generate ## Run the operator from your host.
@@ -202,11 +209,21 @@ container-build-agent: ## Build the sandbox agent image.
 		--build-arg BUILD_TIME=$(BUILD_TIME) \
 		-t $(SANDBOX_IMG) .
 
+.PHONY: container-build-proxy
+container-build-proxy: ## Build the credential proxy image.
+	$(CONTAINER_TOOL) build -f Containerfile.proxy \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT_ID) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t $(PROXY_IMG) .
+
 .PHONY: image-server
 image-server: container-build-server
 
 .PHONY: image-agent
 image-agent: container-build-agent
+
+.PHONY: image-proxy
+image-proxy: container-build-proxy
 
 .PHONY: container-push
 container-push: ## Push the operator image.

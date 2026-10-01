@@ -48,6 +48,9 @@ jobs:
           - name: cli-mcp-sandbox
             image: codeready-toolchain/cli-mcp-sandbox
             containerfile: Containerfile.agent
+          - name: cli-mcp-proxy
+            image: codeready-toolchain/cli-mcp-proxy
+            containerfile: Containerfile.proxy
 
     steps:
     - name: Checkout code

@@ -2,10 +2,11 @@ module github.com/codeready-toolchain/cli-mcp-operator
 
 go 1.26.0
 
-toolchain go1.26.6
+toolchain go1.26.8
 
 require (
 	github.com/codeready-toolchain/mcp-common v0.0.0-20260811143708-491c72342347
+	github.com/elazarl/goproxy v1.8.3
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/onsi/ginkgo/v2 v2.32.1

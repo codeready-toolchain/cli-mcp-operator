@@ -6,14 +6,15 @@ import (
 	"testing"
 )
 
-// Phase 2 import boundary: data-plane packages must not pull in the operator.
-// cmd/server and cmd/agent may depend on pkg/* only (not api/, internal/, or
-// controller-runtime). pkg/session must stay CRD-agnostic.
+// Data-plane packages must not pull in the operator.
+// cmd/server, cmd/agent, and cmd/proxy may depend on pkg/* only (not api/,
+// internal/, or controller-runtime). pkg/session and pkg/kubeconfig stay
+// CRD-agnostic.
 func TestImportBoundary(t *testing.T) {
 	t.Parallel()
 
 	root := moduleRoot(t)
-	dataPlane := []string{"./cmd/server", "./cmd/agent", "./pkg/..."}
+	dataPlane := []string{"./cmd/server", "./cmd/agent", "./cmd/proxy", "./pkg/..."}
 	forbidden := []string{
 		"cli-mcp-operator/internal",
 		"cli-mcp-operator/api",

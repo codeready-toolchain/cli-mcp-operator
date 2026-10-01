@@ -418,7 +418,7 @@ Same bar as the operator design: cover this phase with cheap automated tests; de
 
 Walked [credential-proxy-questions.md](credential-proxy-questions.md). This document is `Final`. Implement the PRs below.
 
-### PR 1 — Proxy binary in this repo
+### PR 1 — Proxy binary in this repo — **done**
 
 This PR does not touch the operator or sandbox mounts (they still mount the real Secret). That is scope, not a compatibility promise: PR 2 may break that mount.
 
