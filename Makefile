@@ -4,7 +4,9 @@ SERVER_IMG ?= quay.io/codeready-toolchain/cli-mcp-server:latest
 SANDBOX_IMG ?= quay.io/codeready-toolchain/cli-mcp-sandbox:latest
 KUBE_RBAC_PROXY_IMG ?= quay.io/brancz/kube-rbac-proxy:v0.19.1
 
-# VERSION defines the project version for the bundle.
+# VERSION is the committed bundle CSV. Catalog CD rewrites name, version,
+# and olm.skipRange from git history (hack/stamp-csv-release.py). The FBC
+# channel skipRange is written by hack/compose-catalog.py.
 VERSION ?= 0.0.1
 
 CHANNELS ?= alpha
@@ -352,14 +354,19 @@ bundle: manifests kustomize operator-sdk ## Generate bundle manifests with REPLA
 	python3 hack/stamp-bundle-placeholders.py
 	$(OPERATOR_SDK) bundle validate ./bundle
 
+.PHONY: print-csv-version
+print-csv-version: ## Print the publish-time CSV version (0.0.<count>-commit-<sha>).
+	@python3 hack/stamp-csv-release.py print
+
 .PHONY: generate-cd-release-manifests
-generate-cd-release-manifests: bundle ## Stamp SHA-tagged relatedImages into the bundle CSV for catalog CD.
+generate-cd-release-manifests: bundle ## Stamp images and a per-commit CSV version for catalog CD.
 	python3 hack/replace-bundle-images.py \
 		$(OPERATOR_REPO):$(GIT_SHORT_SHA) \
 		$(SERVER_REPO):$(GIT_SHORT_SHA) \
 		$(SANDBOX_REPO):$(GIT_SHORT_SHA) \
 		$(KUBE_RBAC_PROXY_IMG) \
 		$(CREATED_AT)
+	python3 hack/stamp-csv-release.py apply
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.

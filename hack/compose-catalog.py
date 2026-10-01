@@ -3,6 +3,10 @@
 
 opm render of a bundle image only emits olm.bundle. A file-based catalog also
 needs olm.package and an olm.channel entry that names that bundle.
+
+This catalog keeps one bundle. The channel skipRange is the upgrade edge OLM
+reads; CSV olm.skipRange is not. The range matches claw-operator:
+>=0.0.0 <version, taken from the rendered bundle name <package>.v<version>.
 """
 
 from __future__ import annotations
@@ -60,12 +64,20 @@ def bundle_identity(rendered: str) -> tuple[str, str]:
     return bundles[0]
 
 
+def bundle_version(package: str, bundle_name: str) -> str:
+    prefix = f"{package}.v"
+    if not bundle_name.startswith(prefix) or bundle_name == prefix:
+        raise SystemExit(f"bundle name {bundle_name!r} must start with {prefix!r}")
+    return bundle_name[len(prefix) :]
+
+
 def compose_catalog(rendered: str, channel: str) -> str:
     if not rendered.strip():
         raise SystemExit("rendered bundle YAML is empty")
     if not channel.strip() or any(c.isspace() for c in channel):
         raise SystemExit("channel must be a non-empty token")
     package, bundle_name = bundle_identity(rendered)
+    version = bundle_version(package, bundle_name)
     body = rendered.strip()
     if not body.startswith("---"):
         body = "---\n" + body
@@ -80,6 +92,7 @@ def compose_catalog(rendered: str, channel: str) -> str:
         f"name: {channel}\n"
         f"entries:\n"
         f"  - name: {bundle_name}\n"
+        f'    skipRange: ">=0.0.0 <{version}"\n'
         f"{body}\n"
     )
 
