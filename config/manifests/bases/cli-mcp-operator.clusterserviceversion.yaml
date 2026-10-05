@@ -63,4 +63,6 @@ spec:
     name: sandbox
   - image: REPLACE_KUBE_RBAC_PROXY_IMAGE
     name: kube-rbac-proxy
+  - image: REPLACE_PROXY_IMAGE
+    name: proxy
   version: 0.0.0

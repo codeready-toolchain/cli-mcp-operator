@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -167,7 +168,16 @@ func TestMissingChildrenIncludesClientAuth(t *testing.T) {
 	r := &CliMcpInstanceReconciler{Client: c}
 	missing, msg := r.missingChildren(t.Context(), inst)
 	require.True(t, missing)
-	assert.Equal(t, "missing children: "+clientSAName("oc")+", "+krpConfigMapName("oc"), msg)
+	assert.Equal(t, "missing children: "+strings.Join([]string{
+		clientSAName("oc"),
+		proxyName("oc"),
+		proxyName("oc"),
+		proxyName("oc"),
+		proxyName("oc"),
+		proxyCASecretName("oc"),
+		krpConfigMapName("oc"),
+		proxyName("oc"),
+	}, ", "), msg)
 }
 
 func TestAuthDelegatorNotReady(t *testing.T) {

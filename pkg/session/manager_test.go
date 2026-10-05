@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -233,6 +234,29 @@ func TestNewSessionManagerValidation(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "KubeconfigSecret")
+	})
+
+	t.Run("proxy mode rejects KubeconfigSecret", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.ProxyService = "cli-mcp-oc-proxy"
+		cfg.ProxyCASecret = "cli-mcp-oc-proxy-ca"
+
+		_, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "KubeconfigSecret")
+	})
+
+	t.Run("proxy mode does not require KubeconfigSecret", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.KubeconfigSecret = ""
+		cfg.ProxyService = "cli-mcp-oc-proxy"
+		cfg.ProxyCASecret = "cli-mcp-oc-proxy-ca"
+
+		mgr, err := NewSessionManager(client, cfg, slog.Default())
+
+		require.NoError(t, err)
+		assert.NotNil(t, mgr)
 	})
 
 	t.Run("accepts valid config", func(t *testing.T) {
@@ -867,5 +891,103 @@ func TestExecuteCommand(t *testing.T) {
 			}
 			return updated.Annotations[AnnotationLastActivity] != oldActivity
 		}, time.Second, 10*time.Millisecond, "last-activity should be patched using pre-Execute podName")
+	})
+}
+
+func proxySandboxConfig() SandboxConfig {
+	cfg := newTestConfig()
+	cfg.KubeconfigSecret = ""
+	cfg.ProxyService = "cli-mcp-oc-proxy"
+	cfg.ProxyCASecret = "cli-mcp-oc-proxy-ca"
+	return cfg
+}
+
+func seedProxyGate(t *testing.T, client kubernetes.Interface, ready bool) {
+	t.Helper()
+	ep := &corev1.Endpoints{ObjectMeta: metav1.ObjectMeta{Name: "cli-mcp-oc-proxy", Namespace: testNamespace}}
+	if ready {
+		ep.Subsets = []corev1.EndpointSubset{{Addresses: []corev1.EndpointAddress{{IP: "10.9.9.9"}}}}
+	} else {
+		ep.Subsets = []corev1.EndpointSubset{{NotReadyAddresses: []corev1.EndpointAddress{{IP: "10.9.9.9"}}}}
+	}
+	_, err := client.CoreV1().Endpoints(testNamespace).Create(t.Context(), ep, metav1.CreateOptions{})
+	require.NoError(t, err)
+	_, err = client.NetworkingV1().NetworkPolicies(testNamespace).Create(t.Context(), &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: SandboxNetworkPolicyName(testInstance), Namespace: testNamespace},
+		Spec: networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+		},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+}
+
+func openProxyGate(t *testing.T, client kubernetes.Interface) {
+	t.Helper()
+	np, err := client.NetworkingV1().NetworkPolicies(testNamespace).Get(t.Context(), SandboxNetworkPolicyName(testInstance), metav1.GetOptions{})
+	require.NoError(t, err)
+	np.Spec.PolicyTypes = []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}
+	_, err = client.NetworkingV1().NetworkPolicies(testNamespace).Update(t.Context(), np, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	ep, err := client.CoreV1().Endpoints(testNamespace).Get(t.Context(), "cli-mcp-oc-proxy", metav1.GetOptions{})
+	require.NoError(t, err)
+	ep.Subsets = []corev1.EndpointSubset{{Addresses: []corev1.EndpointAddress{{IP: "10.9.9.9"}}}}
+	_, err = client.CoreV1().Endpoints(testNamespace).Update(t.Context(), ep, metav1.UpdateOptions{})
+	require.NoError(t, err)
+}
+
+func TestProxyGate(t *testing.T) {
+	t.Run("blocks claim until endpoints and egress are ready", func(t *testing.T) {
+		pool := readyPod("ignored", "10.0.0.4", time.Now())
+		pool.Name = "pool-1"
+		delete(pool.Labels, LabelSessionID)
+		client := fake.NewSimpleClientset(&pool)
+		seedProxyGate(t, client, false)
+		mgr, err := NewSessionManager(client, proxySandboxConfig(), slog.Default())
+		require.NoError(t, err)
+
+		_, err = mgr.GetOrCreatePod(t.Context(), "inv-claim")
+		require.Error(t, err)
+		got, err := client.CoreV1().Pods(testNamespace).Get(t.Context(), "pool-1", metav1.GetOptions{})
+		require.NoError(t, err)
+		assert.Empty(t, got.Labels[LabelSessionID])
+	})
+
+	t.Run("blocks create until endpoints and egress are ready", func(t *testing.T) {
+		client := fake.NewSimpleClientset()
+		seedProxyGate(t, client, false)
+		mgr, err := NewSessionManager(client, proxySandboxConfig(), slog.Default())
+		require.NoError(t, err)
+
+		_, err = mgr.GetOrCreatePod(t.Context(), "inv-create")
+		require.Error(t, err)
+		pods, listErr := client.CoreV1().Pods(testNamespace).List(t.Context(), metav1.ListOptions{})
+		require.NoError(t, listErr)
+		assert.Empty(t, pods.Items)
+
+		openProxyGate(t, client)
+		_, err = mgr.GetOrCreatePod(t.Context(), "inv-create")
+		require.Error(t, err)
+		pods, listErr = client.CoreV1().Pods(testNamespace).List(t.Context(), metav1.ListOptions{})
+		require.NoError(t, listErr)
+		assert.Empty(t, pods.Items)
+
+		mgr.proxyGateTTL = 0
+		done := make(chan error, 1)
+		go func() { done <- markPodReady(mgr, "inv-create", "10.0.0.99") }()
+		ip, err := mgr.GetOrCreatePod(t.Context(), "inv-create")
+		require.NoError(t, <-done)
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.99", ip)
+	})
+
+	t.Run("does not block an already assigned pod", func(t *testing.T) {
+		pod := readyPod("inv-kept", "10.0.0.3", time.Now())
+		client := fake.NewSimpleClientset(&pod)
+		mgr, err := NewSessionManager(client, proxySandboxConfig(), slog.Default())
+		require.NoError(t, err)
+
+		ip, err := mgr.GetOrCreatePod(t.Context(), "inv-kept")
+		require.NoError(t, err)
+		assert.Equal(t, "10.0.0.3", ip)
 	})
 }

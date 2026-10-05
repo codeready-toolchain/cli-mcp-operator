@@ -28,24 +28,27 @@ func main() {
 	fmt.Fprintf(os.Stderr, "cli-mcp-server %s (built %s)\n", version.Commit, version.BuildTime)
 
 	var (
-		address               string
-		transport             string
-		stateless             bool
-		namespace             string
-		instanceName          string
-		sandboxImage          string
-		kubeconfig            string
-		kubeconfigSecret      string
-		sandboxServiceAccount string
-		hmacKeyFile           string
-		cpuRequest            string
-		cpuLimit              string
-		memoryRequest         string
-		memoryLimit           string
-		imagePullPolicy       string
-		sandboxEnv            string
-		idleTimeout           time.Duration
-		warmPoolSize          int
+		address                  string
+		transport                string
+		stateless                bool
+		namespace                string
+		instanceName             string
+		sandboxImage             string
+		kubeconfig               string
+		kubeconfigSecret         string
+		proxyService             string
+		proxyCASecret            string
+		dummyKubeconfigConfigMap string
+		sandboxServiceAccount    string
+		hmacKeyFile              string
+		cpuRequest               string
+		cpuLimit                 string
+		memoryRequest            string
+		memoryLimit              string
+		imagePullPolicy          string
+		sandboxEnv               string
+		idleTimeout              time.Duration
+		warmPoolSize             int
 	)
 
 	rootCmd := &cobra.Command{
@@ -53,24 +56,27 @@ func main() {
 		Short: "Sandboxed exec environment MCP server for LLM investigation",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runServer(runConfig{
-				address:               address,
-				transport:             transport,
-				stateless:             stateless,
-				namespace:             namespace,
-				instanceName:          instanceName,
-				sandboxImage:          sandboxImage,
-				kubeconfig:            kubeconfig,
-				kubeconfigSecret:      kubeconfigSecret,
-				sandboxServiceAccount: sandboxServiceAccount,
-				hmacKeyFile:           hmacKeyFile,
-				cpuRequest:            cpuRequest,
-				cpuLimit:              cpuLimit,
-				memoryRequest:         memoryRequest,
-				memoryLimit:           memoryLimit,
-				imagePullPolicy:       imagePullPolicy,
-				sandboxEnv:            sandboxEnv,
-				idleTimeout:           idleTimeout,
-				warmPoolSize:          warmPoolSize,
+				address:                  address,
+				transport:                transport,
+				stateless:                stateless,
+				namespace:                namespace,
+				instanceName:             instanceName,
+				sandboxImage:             sandboxImage,
+				kubeconfig:               kubeconfig,
+				kubeconfigSecret:         kubeconfigSecret,
+				proxyService:             proxyService,
+				proxyCASecret:            proxyCASecret,
+				dummyKubeconfigConfigMap: dummyKubeconfigConfigMap,
+				sandboxServiceAccount:    sandboxServiceAccount,
+				hmacKeyFile:              hmacKeyFile,
+				cpuRequest:               cpuRequest,
+				cpuLimit:                 cpuLimit,
+				memoryRequest:            memoryRequest,
+				memoryLimit:              memoryLimit,
+				imagePullPolicy:          imagePullPolicy,
+				sandboxEnv:               sandboxEnv,
+				idleTimeout:              idleTimeout,
+				warmPoolSize:             warmPoolSize,
 			})
 		},
 	}
@@ -82,7 +88,10 @@ func main() {
 	rootCmd.Flags().StringVar(&instanceName, "instance-name", "", "Instance id used on sandbox labels (required)")
 	rootCmd.Flags().StringVar(&sandboxImage, "sandbox-image", "", "Container image for sandbox pods (required)")
 	rootCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig for the MCP process's Kubernetes client (empty = in-cluster); not the investigation Secret")
-	rootCmd.Flags().StringVar(&kubeconfigSecret, "kubeconfig-secret", "", "Name of the investigation kubeconfig Secret mounted into sandbox pods (required)")
+	rootCmd.Flags().StringVar(&kubeconfigSecret, "kubeconfig-secret", "", "Investigation kubeconfig Secret mounted into sandbox pods when proxy flags are unset (required in that mode)")
+	rootCmd.Flags().StringVar(&proxyService, "proxy-service", "", "Credential proxy Service name (required with --proxy-ca-secret)")
+	rootCmd.Flags().StringVar(&proxyCASecret, "proxy-ca-secret", "", "Proxy CA Secret name (required with --proxy-service)")
+	rootCmd.Flags().StringVar(&dummyKubeconfigConfigMap, "dummy-kubeconfig-configmap", "", "Dummy kubeconfig ConfigMap mounted when a kubernetes proxy target exists")
 	rootCmd.Flags().StringVar(&sandboxServiceAccount, "sandbox-service-account", "", "ServiceAccount name for sandbox pods (required)")
 	rootCmd.Flags().StringVar(&hmacKeyFile, "hmac-key-file", "", "Path to HMAC shared secret file (required)")
 	rootCmd.Flags().StringVar(&cpuRequest, "sandbox-cpu-request", "", "Sandbox CPU request (empty = 100m)")
@@ -100,24 +109,27 @@ func main() {
 }
 
 type runConfig struct {
-	address               string
-	transport             string
-	stateless             bool
-	namespace             string
-	instanceName          string
-	sandboxImage          string
-	kubeconfig            string
-	kubeconfigSecret      string
-	sandboxServiceAccount string
-	hmacKeyFile           string
-	cpuRequest            string
-	cpuLimit              string
-	memoryRequest         string
-	memoryLimit           string
-	imagePullPolicy       string
-	sandboxEnv            string
-	idleTimeout           time.Duration
-	warmPoolSize          int
+	address                  string
+	transport                string
+	stateless                bool
+	namespace                string
+	instanceName             string
+	sandboxImage             string
+	kubeconfig               string
+	kubeconfigSecret         string
+	proxyService             string
+	proxyCASecret            string
+	dummyKubeconfigConfigMap string
+	sandboxServiceAccount    string
+	hmacKeyFile              string
+	cpuRequest               string
+	cpuLimit                 string
+	memoryRequest            string
+	memoryLimit              string
+	imagePullPolicy          string
+	sandboxEnv               string
+	idleTimeout              time.Duration
+	warmPoolSize             int
 }
 
 func runServer(cfg runConfig) error {

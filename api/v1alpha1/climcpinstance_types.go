@@ -31,10 +31,21 @@ const (
 	ReasonReconciling           = "Reconciling"
 	ReasonSecretsNotFound       = "SecretsNotFound"
 	ReasonSecretKeysInvalid     = "SecretKeysInvalid"
+	ReasonKubeconfigInvalid     = "KubeconfigInvalid"
 	ReasonDeploymentUnavailable = "DeploymentUnavailable"
 	ReasonChildrenNotReady      = "ChildrenNotReady"
 	ReasonWarmPoolNotReady      = "WarmPoolNotReady"
 	ReasonWarmPoolUnhealthy     = "WarmPoolUnhealthy"
+)
+
+// ProxyTargetType is spec.proxy.targets[].type.
+type ProxyTargetType string
+
+const (
+	// ProxyTargetKubernetes injects the investigation kubeconfig for that host:port.
+	ProxyTargetKubernetes ProxyTargetType = "kubernetes"
+	// ProxyTargetAllowlist MITMs the listed hosts and injects nothing.
+	ProxyTargetAllowlist ProxyTargetType = "allowlist"
 )
 
 // CliMcpInstanceSpec defines the desired state of one MCP sandbox class / instance.
@@ -52,6 +63,50 @@ type CliMcpInstanceSpec struct {
 	// container. The MCP image is always RELATED_IMAGE_SERVER, not a spec field.
 	// +optional
 	ServerContainer *ServerContainerSpec `json:"serverContainer,omitempty"`
+
+	// Proxy is the credential-isolating proxy for this instance.
+	// Required. Omitting it is invalid; there is no proxy-less instance.
+	// +kubebuilder:validation:Required
+	Proxy ProxySpec `json:"proxy"`
+}
+
+// ProxySpec is the proxy API. Image, replicas, and resources are operator
+// constants, not spec fields.
+type ProxySpec struct {
+	// Targets is the host allowlist and credential injectors for this instance.
+	// At most one kubernetes target. Mixing kubernetes and allowlist is this
+	// instance's union.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=8
+	// +listType=atomic
+	Targets []ProxyTarget `json:"targets"`
+}
+
+// ProxyTarget is one kubernetes kubeconfig or one allowlist.
+type ProxyTarget struct {
+	// Type selects kubernetes (inject) or allowlist (strip only).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=kubernetes;allowlist
+	Type ProxyTargetType `json:"type"`
+
+	// SecretName is the investigation kubeconfig Secret. Kubernetes only.
+	// Empty means cli-mcp-<instance>-kubeconfig. The key is kubeconfig.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	SecretName string `json:"secretName,omitempty"`
+
+	// Domains are literal hosts or host:port values. Allowlist only.
+	// A bare host means port 443 when routes are built. No wildcards and no
+	// leading-dot suffixes.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +listType=set
+	Domains []string `json:"domains,omitempty"`
 }
 
 // SandboxSpec is the user-mergeable sandbox class. Operator-owned pod fields
@@ -126,6 +181,11 @@ type CliMcpInstanceStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 44",message="metadata.name must be at most 44 characters so cli-mcp-<name>-kubeconfig is a valid DNS-1123 label"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.filter(t, t.type == 'kubernetes').size() <= 1",message="at most one kubernetes target"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'kubernetes' || !has(t.domains))",message="kubernetes target must not set domains"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type == 'kubernetes' || !has(t.secretName))",message="secretName is only valid on a kubernetes target"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'allowlist' || (has(t.domains) && size(t.domains) >= 1))",message="allowlist target requires domains"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'allowlist' || t.domains.all(d, !d.contains('*') && !d.startsWith('.') && d.matches('^(\\\\[[0-9A-Fa-f:.]+\\\\]|[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$')))",message="domains must be literal hosts or host:port, including [ipv6]:port"
 
 // CliMcpInstance is one MCP class/instance (one sandbox image + config, one MCP Deployment).
 type CliMcpInstance struct {

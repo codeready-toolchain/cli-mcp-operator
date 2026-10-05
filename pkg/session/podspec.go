@@ -84,43 +84,122 @@ func BuildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 							Drop: []corev1.Capability{"ALL"},
 						},
 					},
-					Env: overlaySandboxEnv(config.Env),
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "kubeconfig", MountPath: "/config", ReadOnly: true},
-						{Name: "workspace", MountPath: "/workspace"},
-					},
+					Env:          overlaySandboxEnv(config),
+					VolumeMounts: sandboxMounts(config),
 				},
 			},
-			Volumes: []corev1.Volume{
-				{
-					Name: "kubeconfig",
-					VolumeSource: corev1.VolumeSource{
-						Secret: &corev1.SecretVolumeSource{
-							SecretName: config.KubeconfigSecret,
-						},
-					},
-				},
-				{
-					Name: "workspace",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-			},
+			Volumes: sandboxVolumes(config),
 		},
 	}
 }
 
-func overlaySandboxEnv(userEnv []corev1.EnvVar) []corev1.EnvVar {
-	env := []corev1.EnvVar{
-		{Name: "KUBECONFIG", Value: "/config/kubeconfig"},
-		{Name: "HOME", Value: "/workspace"},
+// OperatorEnv is the env the sandbox builder owns. User overlay entries with
+// these names are dropped.
+func OperatorEnv(config SandboxConfig) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, 10)
+	if config.DummyKubeconfigConfigMap != "" || config.KubeconfigSecret != "" {
+		env = append(env, corev1.EnvVar{Name: "KUBECONFIG", Value: KubeconfigPath})
 	}
-	for _, e := range userEnv {
+	env = append(env, corev1.EnvVar{Name: "HOME", Value: "/workspace"})
+	if config.ProxyService != "" {
+		proxyURL := fmt.Sprintf("http://%s:%d", config.ProxyService, ProxyListenPort)
+		for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			env = append(env, corev1.EnvVar{Name: name, Value: proxyURL})
+		}
+		for _, name := range []string{"NO_PROXY", "no_proxy"} {
+			env = append(env, corev1.EnvVar{Name: name, Value: NoProxyValue})
+		}
+	}
+	if config.ProxyCASecret != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "SSL_CERT_FILE", Value: ProxyCAFile},
+			corev1.EnvVar{Name: "REQUESTS_CA_BUNDLE", Value: ProxyCAFile},
+		)
+	}
+	return env
+}
+
+func overlaySandboxEnv(config SandboxConfig) []corev1.EnvVar {
+	env := OperatorEnv(config)
+	for _, e := range config.Env {
 		if _, reserved := reservedSandboxEnv[e.Name]; reserved {
 			continue
 		}
 		env = append(env, e)
 	}
 	return env
+}
+
+func sandboxMounts(config SandboxConfig) []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+	if config.DummyKubeconfigConfigMap != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "kubeconfig",
+			MountPath: KubeconfigPath,
+			SubPath:   "kubeconfig",
+			ReadOnly:  true,
+		})
+	} else if config.KubeconfigSecret != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "kubeconfig",
+			MountPath: "/config",
+			ReadOnly:  true,
+		})
+	}
+	if config.ProxyCASecret != "" {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "proxy-ca",
+			MountPath: ProxyCAFile,
+			SubPath:   "ca.crt",
+			ReadOnly:  true,
+		})
+	}
+	mounts = append(mounts, corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"})
+	return mounts
+}
+
+func sandboxVolumes(config SandboxConfig) []corev1.Volume {
+	var volumes []corev1.Volume
+	if config.DummyKubeconfigConfigMap != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "kubeconfig",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: config.DummyKubeconfigConfigMap},
+					Items: []corev1.KeyToPath{{
+						Key:  "kubeconfig",
+						Path: "kubeconfig",
+					}},
+				},
+			},
+		})
+	} else if config.KubeconfigSecret != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "kubeconfig",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: config.KubeconfigSecret},
+			},
+		})
+	}
+	if config.ProxyCASecret != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "proxy-ca",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: config.ProxyCASecret,
+					Items: []corev1.KeyToPath{{
+						Key:  "ca.crt",
+						Path: "ca.crt",
+					}},
+				},
+			},
+		})
+	}
+	volumes = append(volumes, corev1.Volume{
+		Name: "workspace",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
+	return volumes
 }

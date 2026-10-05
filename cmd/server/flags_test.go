@@ -140,9 +140,37 @@ func TestBuildSandboxConfig(t *testing.T) {
 			assert.Equal(t, "cli-mcp", got.Namespace)
 			assert.Equal(t, "cli-mcp-oc-sandbox", got.ServiceAccountName)
 			assert.Equal(t, "cli-mcp-oc-kubeconfig", got.KubeconfigSecret)
+			assert.Empty(t, got.ProxyService)
 			if tt.check != nil {
 				tt.check(t, got)
 			}
 		})
 	}
+}
+
+func TestBuildSandboxConfigProxyMode(t *testing.T) {
+	t.Parallel()
+	cfg := validRunConfig()
+	cfg.kubeconfigSecret = ""
+	cfg.proxyService = "cli-mcp-oc-proxy"
+	cfg.proxyCASecret = "cli-mcp-oc-proxy-ca"
+	cfg.dummyKubeconfigConfigMap = "cli-mcp-oc-proxy"
+
+	got, err := buildSandboxConfig(cfg, "hmac")
+	require.NoError(t, err)
+	assert.Empty(t, got.KubeconfigSecret)
+	assert.Equal(t, "cli-mcp-oc-proxy", got.ProxyService)
+	assert.Equal(t, "cli-mcp-oc-proxy-ca", got.ProxyCASecret)
+	assert.Equal(t, "cli-mcp-oc-proxy", got.DummyKubeconfigConfigMap)
+
+	cfg.kubeconfigSecret = "cli-mcp-oc-kubeconfig"
+	_, err = buildSandboxConfig(cfg, "hmac")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--kubeconfig-secret must be empty")
+
+	cfg.kubeconfigSecret = ""
+	cfg.proxyCASecret = ""
+	_, err = buildSandboxConfig(cfg, "hmac")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--proxy-service and --proxy-ca-secret")
 }

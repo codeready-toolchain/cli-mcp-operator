@@ -17,7 +17,9 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -28,12 +30,15 @@ import (
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
 	envRelatedImageServer        = "RELATED_IMAGE_SERVER"
 	envRelatedImageSandbox       = "RELATED_IMAGE_SANDBOX"
 	envRelatedImageKubeRBACProxy = "RELATED_IMAGE_KUBE_RBAC_PROXY"
+	envRelatedImageProxy         = "RELATED_IMAGE_PROXY"
 
 	defaultIdleTimeout = 30 * time.Minute
 )
@@ -43,6 +48,7 @@ type Images struct {
 	Server        string
 	Sandbox       string
 	KubeRBACProxy string
+	Proxy         string
 }
 
 func ImagesFromEnv() Images {
@@ -50,6 +56,7 @@ func ImagesFromEnv() Images {
 		Server:        os.Getenv(envRelatedImageServer),
 		Sandbox:       os.Getenv(envRelatedImageSandbox),
 		KubeRBACProxy: os.Getenv(envRelatedImageKubeRBACProxy),
+		Proxy:         os.Getenv(envRelatedImageProxy),
 	}
 }
 
@@ -76,8 +83,38 @@ func (r *CliMcpInstanceReconciler) poolSandboxConfig(inst *climcpv1alpha1.CliMcp
 	cfg.InstanceName = inst.Name
 	cfg.Namespace = inst.Namespace
 	cfg.ServiceAccountName = sandboxSAName(inst.Name)
-	cfg.KubeconfigSecret = kubeconfigSecretName(inst.Name)
+	cfg.ProxyService = proxyName(inst.Name)
+	cfg.ProxyCASecret = proxyCASecretName(inst.Name)
+	if _, ok := effectiveKubeconfigSecretName(inst); ok {
+		cfg.DummyKubeconfigConfigMap = proxyName(inst.Name)
+	}
 	return cfg
+}
+
+func (r *CliMcpInstanceReconciler) overlayInputs(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (session.SandboxConfig, []byte, []byte, error) {
+	cfg := r.poolSandboxConfig(inst)
+	var dummy, ca []byte
+	if cfg.DummyKubeconfigConfigMap != "" {
+		cm := &corev1.ConfigMap{}
+		err := r.Get(ctx, types.NamespacedName{Namespace: inst.Namespace, Name: cfg.DummyKubeconfigConfigMap}, cm)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return cfg, nil, nil, fmt.Errorf("get dummy kubeconfig: %w", err)
+		}
+		if err == nil && cm.Data[kubeconfigDataKey] != "" {
+			dummy = []byte(cm.Data[kubeconfigDataKey])
+		}
+	}
+	sec := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: inst.Namespace, Name: cfg.ProxyCASecret}, sec)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return cfg, nil, nil, fmt.Errorf("get proxy CA: %w", err)
+	}
+	if err == nil {
+		if v := bytes.TrimSpace(sec.Data[caCertKey]); len(v) > 0 {
+			ca = bytes.Clone(v)
+		}
+	}
+	return cfg, dummy, ca, nil
 }
 
 type overlayFingerprint struct {
@@ -88,9 +125,12 @@ type overlayFingerprint struct {
 	MemoryLimit     string            `json:"memoryLimit"`
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy"`
 	Env             []corev1.EnvVar   `json:"env"`
+	OperatorEnv     []corev1.EnvVar   `json:"operatorEnv"`
+	DummyKubeconfig []byte            `json:"dummyKubeconfig"`
+	ProxyCA         []byte            `json:"proxyCA"`
 }
 
-func overlayHash(cfg session.SandboxConfig) (string, error) {
+func overlayHash(cfg session.SandboxConfig, dummy, ca []byte) (string, error) {
 	raw, err := json.Marshal(overlayFingerprint{
 		Image:           cfg.Image,
 		CPURequest:      cfg.CPURequest,
@@ -99,6 +139,9 @@ func overlayHash(cfg session.SandboxConfig) (string, error) {
 		MemoryLimit:     cfg.MemoryLimit,
 		ImagePullPolicy: cfg.ImagePullPolicy,
 		Env:             cfg.Env,
+		OperatorEnv:     session.OperatorEnv(cfg),
+		DummyKubeconfig: dummy,
+		ProxyCA:         ca,
 	})
 	if err != nil {
 		return "", fmt.Errorf("hash sandbox overlay: %w", err)

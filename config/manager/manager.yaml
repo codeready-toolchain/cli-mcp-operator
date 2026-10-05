@@ -78,6 +78,8 @@ spec:
             value: quay.io/codeready-toolchain/cli-mcp-sandbox:latest
           - name: RELATED_IMAGE_KUBE_RBAC_PROXY
             value: quay.io/brancz/kube-rbac-proxy:v0.19.1
+          - name: RELATED_IMAGE_PROXY
+            value: quay.io/codeready-toolchain/cli-mcp-proxy:latest
           # OwnNamespace fallback for make deploy. OLM overrides WATCH_NAMESPACE
           # from the olm.targetNamespaces annotation.
           - name: POD_NAMESPACE

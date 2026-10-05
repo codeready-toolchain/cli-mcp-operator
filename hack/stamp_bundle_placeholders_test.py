@@ -31,6 +31,8 @@ metadata:
                   value: quay.io/codeready-toolchain/cli-mcp-sandbox:latest
                 - name: RELATED_IMAGE_KUBE_RBAC_PROXY
                   value: quay.io/brancz/kube-rbac-proxy:v0.19.1
+                - name: RELATED_IMAGE_PROXY
+                  value: quay.io/codeready-toolchain/cli-mcp-proxy:latest
                 image: cli-mcp-operator:latest
                 name: manager
   relatedImages:
@@ -42,6 +44,8 @@ metadata:
     name: sandbox
   - image: REPLACE_KUBE_RBAC_PROXY_IMAGE
     name: kube-rbac-proxy
+  - image: REPLACE_PROXY_IMAGE
+    name: proxy
   version: 0.0.1
 """
 
@@ -58,6 +62,7 @@ class StampBundlePlaceholdersTest(unittest.TestCase):
         self.assertIn("value: REPLACE_SERVER_IMAGE", got)
         self.assertIn("value: REPLACE_SANDBOX_IMAGE", got)
         self.assertIn("value: REPLACE_KUBE_RBAC_PROXY_IMAGE", got)
+        self.assertIn("value: REPLACE_PROXY_IMAGE", got)
         self.assertIn("image: REPLACE_OPERATOR_IMAGE", got)
         self.assertNotIn("cli-mcp-operator:latest", got)
         self.assertNotIn("quay.io/brancz/kube-rbac-proxy:", got)
@@ -97,7 +102,9 @@ class StampBundlePlaceholdersTest(unittest.TestCase):
             "  - image: REPLACE_SANDBOX_IMAGE\n"
             "    name: sandbox\n"
             "  - image: REPLACE_KUBE_RBAC_PROXY_IMAGE\n"
-            "    name: kube-rbac-proxy\n",
+            "    name: kube-rbac-proxy\n"
+            "  - image: REPLACE_PROXY_IMAGE\n"
+            "    name: proxy\n",
             "",
         )
         with self.assertRaises(SystemExit) as ctx:

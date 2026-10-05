@@ -9,6 +9,16 @@ const (
 
 	ComponentSandbox = "sandbox"
 	ComponentServer  = "server"
+	ComponentProxy   = "proxy"
+
+	// ProxyListenPort is the credential proxy Service port. It is not a CRD field.
+	ProxyListenPort int32 = 8080
+	// NoProxyValue keeps loopback off the proxy. Cluster DNS names are not listed.
+	NoProxyValue = "127.0.0.1,localhost,::1"
+	// ProxyCAFile is the sandbox path of the proxy CA certificate.
+	ProxyCAFile = "/etc/cli-mcp/proxy-ca/ca.crt"
+	// KubeconfigPath is KUBECONFIG inside the sandbox.
+	KubeconfigPath = "/config/kubeconfig"
 
 	AnnotationCreatedAt    = "cli-mcp.redhat.com/created-at"
 	AnnotationLastActivity = "cli-mcp.redhat.com/last-activity"
@@ -27,6 +37,14 @@ var reservedSandboxEnv = map[string]struct{}{
 	"KUBECONFIG":         {},
 	"HOME":               {},
 	"SANDBOX_AUTH_TOKEN": {},
+	"HTTP_PROXY":         {},
+	"HTTPS_PROXY":        {},
+	"NO_PROXY":           {},
+	"http_proxy":         {},
+	"https_proxy":        {},
+	"no_proxy":           {},
+	"SSL_CERT_FILE":      {},
+	"REQUESTS_CA_BUNDLE": {},
 }
 
 // SandboxConfig holds CRD-agnostic tunables for sandbox pod lifecycle.
@@ -42,10 +60,17 @@ type SandboxConfig struct {
 	Namespace          string
 	InstanceName       string
 	ServiceAccountName string
-	KubeconfigSecret   string
-	AgentPort          int
-	ImagePullPolicy    corev1.PullPolicy
-	Env                []corev1.EnvVar
+	// KubeconfigSecret is the admin kubeconfig mounted only when proxy flags are unset.
+	KubeconfigSecret string
+	// DummyKubeconfigConfigMap is the dummy kubeconfig ConfigMap. Set for a kubernetes target.
+	DummyKubeconfigConfigMap string
+	// ProxyService is the credential proxy Service name. Empty skips HTTPS_PROXY and the fail-closed gate.
+	ProxyService string
+	// ProxyCASecret is the MITM CA Secret. Required with ProxyService.
+	ProxyCASecret   string
+	AgentPort       int
+	ImagePullPolicy corev1.PullPolicy
+	Env             []corev1.EnvVar
 }
 
 // DefaultConfig returns resource and agent-port defaults. Identity fields
@@ -90,4 +115,9 @@ func AuthSecretName(sessionID string) string {
 // UnassignedSelector matches sandbox pods for one instance that have no session-id.
 func UnassignedSelector(instance string) string {
 	return SandboxSelector(instance) + ",!" + LabelSessionID
+}
+
+// SandboxNetworkPolicyName is the sandbox NetworkPolicy, derived from the instance name.
+func SandboxNetworkPolicyName(instance string) string {
+	return "cli-mcp-" + instance + "-sandbox"
 }

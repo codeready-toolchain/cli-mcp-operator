@@ -32,6 +32,8 @@ metadata:
     name: sandbox
   - image: REPLACE_KUBE_RBAC_PROXY_IMAGE
     name: kube-rbac-proxy
+  - image: REPLACE_PROXY_IMAGE
+    name: proxy
 """
 
 
@@ -43,6 +45,7 @@ class ReplaceBundleImagesTest(unittest.TestCase):
             "quay.io/example/server:abc",
             "quay.io/example/sandbox:abc",
             "quay.io/brancz/kube-rbac-proxy:v0.19.1",
+            "quay.io/example/proxy:abc",
             "2026-08-26T12:00:00Z",
         )
         self.assertIn('createdAt: "2026-08-26T12:00:00Z"', got)
@@ -57,6 +60,7 @@ class ReplaceBundleImagesTest(unittest.TestCase):
                 "srv",
                 "sbx",
                 "proxy",
+                "cli-mcp-proxy",
                 "2026-08-26T12:00:00Z",
             )
         self.assertIn("REPLACE_CREATED_AT", str(ctx.exception))
@@ -69,6 +73,7 @@ class ReplaceBundleImagesTest(unittest.TestCase):
                 "srv",
                 "sbx",
                 "proxy",
+                "cli-mcp-proxy",
                 "2026-08-26T12:00:00Z",
             )
         self.assertIn("REPLACE_", str(ctx.exception))

@@ -15,6 +15,13 @@ metadata:
             "name": "oc"
           },
           "spec": {
+            "proxy": {
+              "targets": [
+                {
+                  "type": "kubernetes"
+                }
+              ]
+            },
             "replicas": 2,
             "sandbox": {
               "idleTimeout": "30m",
@@ -156,6 +163,8 @@ spec:
                   value: REPLACE_SANDBOX_IMAGE
                 - name: RELATED_IMAGE_KUBE_RBAC_PROXY
                   value: REPLACE_KUBE_RBAC_PROXY_IMAGE
+                - name: RELATED_IMAGE_PROXY
+                  value: REPLACE_PROXY_IMAGE
                 - name: POD_NAMESPACE
                   valueFrom:
                     fieldRef:
@@ -272,6 +281,12 @@ spec:
           - update
           - watch
         - apiGroups:
+          - ""
+          resources:
+          - endpoints
+          verbs:
+          - get
+        - apiGroups:
           - networking.k8s.io
           resources:
           - networkpolicies
@@ -319,4 +334,6 @@ spec:
     name: sandbox
   - image: REPLACE_KUBE_RBAC_PROXY_IMAGE
     name: kube-rbac-proxy
+  - image: REPLACE_PROXY_IMAGE
+    name: proxy
   version: 0.0.1

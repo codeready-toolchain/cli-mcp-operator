@@ -71,6 +71,22 @@ func TestNormalizeDeploymentFillsAPIDefaults(t *testing.T) {
 	assert.Equal(t, int32(10), *deploy.Spec.RevisionHistoryLimit)
 }
 
+func TestNormalizeDeploymentLeavesProxySurge(t *testing.T) {
+	t.Parallel()
+	deploy := &appsv1.Deployment{}
+	deploy.Spec.Strategy = proxyStrategy()
+	deploy.Spec.Template.Spec.Containers = []corev1.Container{{
+		Name:  credentialProxyContainer,
+		Image: "example.com/cli-mcp-proxy:test",
+	}}
+	NormalizeDeployment(deploy)
+	require.NotNil(t, deploy.Spec.Strategy.RollingUpdate)
+	require.NotNil(t, deploy.Spec.Strategy.RollingUpdate.MaxUnavailable)
+	require.NotNil(t, deploy.Spec.Strategy.RollingUpdate.MaxSurge)
+	assert.Equal(t, int32(0), deploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal)
+	assert.Equal(t, int32(1), deploy.Spec.Strategy.RollingUpdate.MaxSurge.IntVal)
+}
+
 func TestNormalizeDeploymentPullAlwaysForLatest(t *testing.T) {
 	t.Parallel()
 	deploy := &appsv1.Deployment{}

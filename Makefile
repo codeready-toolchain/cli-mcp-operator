@@ -26,6 +26,7 @@ BUNDLE_CSV = bundle/manifests/cli-mcp-operator.clusterserviceversion.yaml
 OPERATOR_REPO ?= $(IMAGE_TAG_BASE)
 SERVER_REPO ?= quay.io/codeready-toolchain/cli-mcp-server
 SANDBOX_REPO ?= quay.io/codeready-toolchain/cli-mcp-sandbox
+PROXY_REPO ?= quay.io/codeready-toolchain/cli-mcp-proxy
 GIT_SHORT_SHA ?= $(shell git rev-parse --short HEAD)
 CREATED_AT ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -245,7 +246,7 @@ endif
 define generate-deploy-overlay
 	@rm -rf config/.deploy && mkdir -p config/.deploy
 	@img=$(1); printf 'apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n- ../default\nimages:\n- name: controller\n  newName: %s\n  newTag: "%s"\npatches:\n- path: related_images_patch.yaml\n  target:\n    kind: Deployment\n' "$${img%:*}" "$${img##*:}" > config/.deploy/kustomization.yaml
-	@printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: controller-manager\nspec:\n  template:\n    spec:\n      containers:\n      - name: manager\n        env:\n        - name: RELATED_IMAGE_SERVER\n          value: "$(2)"\n        - name: RELATED_IMAGE_SANDBOX\n          value: "$(3)"\n        - name: RELATED_IMAGE_KUBE_RBAC_PROXY\n          value: "$(4)"\n' > config/.deploy/related_images_patch.yaml
+	@printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: controller-manager\nspec:\n  template:\n    spec:\n      containers:\n      - name: manager\n        env:\n        - name: RELATED_IMAGE_SERVER\n          value: "$(2)"\n        - name: RELATED_IMAGE_SANDBOX\n          value: "$(3)"\n        - name: RELATED_IMAGE_KUBE_RBAC_PROXY\n          value: "$(4)"\n        - name: RELATED_IMAGE_PROXY\n          value: "$(5)"\n' > config/.deploy/related_images_patch.yaml
 endef
 
 define generate-bundle-overlay
@@ -264,7 +265,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the cluster in ~/.kube/con
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy the operator without mutating committed kustomize files.
-	$(call generate-deploy-overlay,$(IMG),$(SERVER_IMG),$(SANDBOX_IMG),$(KUBE_RBAC_PROXY_IMG))
+	$(call generate-deploy-overlay,$(IMG),$(SERVER_IMG),$(SANDBOX_IMG),$(KUBE_RBAC_PROXY_IMG),$(PROXY_IMG))
 	@trap 'rm -rf config/.deploy' EXIT; $(KUSTOMIZE) build config/.deploy | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -382,6 +383,7 @@ generate-cd-release-manifests: bundle ## Stamp images and a per-commit CSV versi
 		$(SERVER_REPO):$(GIT_SHORT_SHA) \
 		$(SANDBOX_REPO):$(GIT_SHORT_SHA) \
 		$(KUBE_RBAC_PROXY_IMG) \
+		$(PROXY_REPO):$(GIT_SHORT_SHA) \
 		$(CREATED_AT)
 	python3 hack/stamp-csv-release.py apply
 

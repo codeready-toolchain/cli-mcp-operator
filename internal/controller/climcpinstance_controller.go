@@ -19,10 +19,12 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/kubeconfig"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -37,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -274,7 +277,13 @@ func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, orig, inst *cl
 	if invalid, msg := r.invalidRequiredSecretKeys(ctx, inst, hmac); invalid {
 		return false, climcpv1alpha1.ReasonSecretKeysInvalid, msg
 	}
+	if invalid, msg := r.kubeconfigInvalid(ctx, inst); invalid {
+		return false, climcpv1alpha1.ReasonKubeconfigInvalid, msg
+	}
 	if missing, msg := r.missingChildren(ctx, inst); missing {
+		return false, climcpv1alpha1.ReasonChildrenNotReady, msg
+	}
+	if missing, msg := r.sandboxEgressNotReady(ctx, inst); missing {
 		return false, climcpv1alpha1.ReasonChildrenNotReady, msg
 	}
 	if missing, msg := r.authDelegatorNotReady(ctx, inst); missing {
@@ -289,17 +298,27 @@ func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, orig, inst *cl
 	if !deploymentAvailable(deploy) {
 		return false, climcpv1alpha1.ReasonDeploymentUnavailable, "MCP Deployment is not Available"
 	}
+	proxyDeploy := &appsv1.Deployment{}
+	err = r.Get(ctx, types.NamespacedName{Name: proxyName(inst.Name), Namespace: inst.Namespace}, proxyDeploy)
+	if err != nil {
+		return false, climcpv1alpha1.ReasonChildrenNotReady, fmt.Sprintf("proxy Deployment: %v", err)
+	}
+	if !deploymentAvailable(proxyDeploy) {
+		return false, climcpv1alpha1.ReasonDeploymentUnavailable, "proxy Deployment is not Available"
+	}
 	return poolReadyGate(orig, pool, time.Now().UTC())
 }
 
 func (r *CliMcpInstanceReconciler) missingRequiredSecrets(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret) (bool, string) {
 	var missing []string
-	kube, err := r.getSecret(ctx, inst.Namespace, kubeconfigSecretName(inst.Name))
-	if err != nil {
-		return true, err.Error()
-	}
-	if kube == nil {
-		missing = append(missing, kubeconfigSecretName(inst.Name))
+	if name, ok := effectiveKubeconfigSecretName(inst); ok {
+		kube, err := r.getSecret(ctx, inst.Namespace, name)
+		if err != nil {
+			return true, err.Error()
+		}
+		if kube == nil {
+			missing = append(missing, name)
+		}
 	}
 	if hmac == nil {
 		missing = append(missing, hmacSecretName(inst.Name))
@@ -321,12 +340,26 @@ func (r *CliMcpInstanceReconciler) missingRequiredSecrets(ctx context.Context, i
 
 func (r *CliMcpInstanceReconciler) invalidRequiredSecretKeys(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, hmac *corev1.Secret) (bool, string) {
 	var invalid []string
-	kube, err := r.getSecret(ctx, inst.Namespace, kubeconfigSecretName(inst.Name))
+	if name, ok := effectiveKubeconfigSecretName(inst); ok {
+		kube, err := r.getSecret(ctx, inst.Namespace, name)
+		if err != nil {
+			return true, err.Error()
+		}
+		if kube != nil && !secretKeyNonEmpty(kube, kubeconfigDataKey) {
+			invalid = append(invalid, name+"/"+kubeconfigDataKey)
+		}
+	}
+	ca, err := r.getSecret(ctx, inst.Namespace, proxyCASecretName(inst.Name))
 	if err != nil {
 		return true, err.Error()
 	}
-	if kube != nil && !secretKeyNonEmpty(kube, kubeconfigDataKey) {
-		invalid = append(invalid, kubeconfigSecretName(inst.Name)+"/"+kubeconfigDataKey)
+	if ca != nil {
+		if !secretKeyNonEmpty(ca, caCertKey) {
+			invalid = append(invalid, proxyCASecretName(inst.Name)+"/"+caCertKey)
+		}
+		if !secretKeyNonEmpty(ca, caKeyKey) {
+			invalid = append(invalid, proxyCASecretName(inst.Name)+"/"+caKeyKey)
+		}
 	}
 	if hmac != nil && !secretKeyNonEmpty(hmac, hmacSecretKey) {
 		invalid = append(invalid, hmacSecretName(inst.Name)+"/"+hmacSecretKey)
@@ -351,6 +384,39 @@ func (r *CliMcpInstanceReconciler) invalidRequiredSecretKeys(ctx context.Context
 	return true, "empty or missing keys: " + strings.Join(invalid, ", ")
 }
 
+func (r *CliMcpInstanceReconciler) kubeconfigInvalid(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (bool, string) {
+	name, ok := effectiveKubeconfigSecretName(inst)
+	if !ok {
+		return false, ""
+	}
+	kube, err := r.getSecret(ctx, inst.Namespace, name)
+	if err != nil {
+		return true, err.Error()
+	}
+	if kube == nil || !secretKeyNonEmpty(kube, kubeconfigDataKey) {
+		return false, ""
+	}
+	if _, err := kubeconfig.Validate(kube.Data[kubeconfigDataKey]); err != nil {
+		return true, err.Error()
+	}
+	return false, ""
+}
+
+func (r *CliMcpInstanceReconciler) sandboxEgressNotReady(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (bool, string) {
+	np := &networkingv1.NetworkPolicy{}
+	err := r.Get(ctx, types.NamespacedName{Name: sandboxSAName(inst.Name), Namespace: inst.Namespace}, np)
+	if apierrors.IsNotFound(err) {
+		return true, "sandbox NetworkPolicy is missing"
+	}
+	if err != nil {
+		return true, err.Error()
+	}
+	if !slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress) {
+		return true, "sandbox NetworkPolicy does not set Egress"
+	}
+	return false, ""
+}
+
 func (r *CliMcpInstanceReconciler) missingChildren(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (bool, string) {
 	checks := []struct {
 		obj  client.Object
@@ -365,9 +431,15 @@ func (r *CliMcpInstanceReconciler) missingChildren(ctx context.Context, inst *cl
 		{&rbacv1.RoleBinding{}, clientSAName(inst.Name)},
 		{&corev1.Service{}, childName(inst.Name)},
 		{&networkingv1.NetworkPolicy{}, sandboxSAName(inst.Name)},
+		{&networkingv1.NetworkPolicy{}, proxyName(inst.Name)},
 		{&appsv1.Deployment{}, childName(inst.Name)},
+		{&appsv1.Deployment{}, proxyName(inst.Name)},
+		{&corev1.Service{}, proxyName(inst.Name)},
+		{&corev1.ServiceAccount{}, proxyName(inst.Name)},
 		{&corev1.Secret{}, hmacSecretName(inst.Name)},
+		{&corev1.Secret{}, proxyCASecretName(inst.Name)},
 		{&corev1.ConfigMap{}, krpConfigMapName(inst.Name)},
+		{&corev1.ConfigMap{}, proxyName(inst.Name)},
 	}
 	var missing []string
 	for _, c := range checks {
@@ -419,6 +491,9 @@ func deploymentAvailable(d *appsv1.Deployment) bool {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *CliMcpInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &climcpv1alpha1.CliMcpInstance{}, kubeconfigSecretIndex, indexEffectiveKubeconfig); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&climcpv1alpha1.CliMcpInstance{}).
 		Owns(&appsv1.Deployment{}).
@@ -429,7 +504,7 @@ func (r *CliMcpInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&networkingv1.NetworkPolicy{}).
 		Owns(&corev1.ConfigMap{}).
 		Watches(&corev1.Pod{}, enqueueSandboxPod(), builder.WithPredicates(sandboxPodPredicate{})).
-		Watches(&corev1.Secret{}, enqueueSecret()).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.mapSecret)).
 		Named("climcpinstance").
 		Complete(r)
 }

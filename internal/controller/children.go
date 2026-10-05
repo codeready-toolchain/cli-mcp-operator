@@ -65,6 +65,9 @@ func (r *CliMcpInstanceReconciler) applyChildren(ctx context.Context, inst *clim
 	if err != nil {
 		return err
 	}
+	if err := r.applyProxy(ctx, inst); err != nil {
+		return err
+	}
 	return r.applyDeployment(ctx, inst, hmac, krp)
 }
 
@@ -100,7 +103,7 @@ func (r *CliMcpInstanceReconciler) applyMCPSA(ctx context.Context, inst *climcpv
 	return nil
 }
 
-func mcpRoleRules() []rbacv1.PolicyRule {
+func mcpRoleRules(instance string) []rbacv1.PolicyRule {
 	return []rbacv1.PolicyRule{
 		{
 			APIGroups: []string{""},
@@ -112,6 +115,18 @@ func mcpRoleRules() []rbacv1.PolicyRule {
 			Resources: []string{"secrets"},
 			Verbs:     []string{"create", "delete"},
 		},
+		{
+			APIGroups:     []string{""},
+			Resources:     []string{"endpoints"},
+			ResourceNames: []string{proxyName(instance)},
+			Verbs:         []string{"get"},
+		},
+		{
+			APIGroups:     []string{"networking.k8s.io"},
+			Resources:     []string{"networkpolicies"},
+			ResourceNames: []string{sandboxSAName(instance)},
+			Verbs:         []string{"get"},
+		},
 	}
 }
 
@@ -122,7 +137,7 @@ func (r *CliMcpInstanceReconciler) applyMCPRole(ctx context.Context, inst *climc
 	}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, role, func() error {
 		role.Labels = instanceLabels(inst.Name)
-		role.Rules = mcpRoleRules()
+		role.Rules = mcpRoleRules(inst.Name)
 		return controllerutil.SetControllerReference(inst, role, r.Scheme)
 	})
 	if err != nil {
@@ -201,7 +216,7 @@ func (r *CliMcpInstanceReconciler) applySandboxIngressNP(ctx context.Context, in
 		np.Labels = instanceLabels(inst.Name)
 		np.Spec = networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{MatchLabels: sandboxLabels(inst.Name)},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{{
 				From: []networkingv1.NetworkPolicyPeer{{
 					PodSelector: &metav1.LabelSelector{MatchLabels: serverLabels(inst.Name)},
@@ -211,6 +226,7 @@ func (r *CliMcpInstanceReconciler) applySandboxIngressNP(ctx context.Context, in
 					Port:     &port,
 				}},
 			}},
+			Egress: sandboxEgress(inst.Name),
 		}
 		return controllerutil.SetControllerReference(inst, np, r.Scheme)
 	})
@@ -278,12 +294,16 @@ func mcpServerArgs(inst *climcpv1alpha1.CliMcpInstance, overlay session.SandboxC
 		"--instance-name", inst.Name,
 		"--sandbox-image", overlay.Image,
 		"--hmac-key-file", hmacMountPath + "/" + hmacSecretKey,
-		"--kubeconfig-secret", kubeconfigSecretName(inst.Name),
+		"--proxy-service", proxyName(inst.Name),
+		"--proxy-ca-secret", proxyCASecretName(inst.Name),
 		"--sandbox-service-account", sandboxSAName(inst.Name),
 		"--sandbox-cpu-request", overlay.CPURequest,
 		"--sandbox-cpu-limit", overlay.CPULimit,
 		"--sandbox-memory-request", overlay.MemoryRequest,
 		"--sandbox-memory-limit", overlay.MemoryLimit,
+	}
+	if _, ok := effectiveKubeconfigSecretName(inst); ok {
+		args = append(args, "--dummy-kubeconfig-configmap", proxyName(inst.Name))
 	}
 	if overlay.ImagePullPolicy != "" {
 		args = append(args, "--sandbox-image-pull-policy", string(overlay.ImagePullPolicy))

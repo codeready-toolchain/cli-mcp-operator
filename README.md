@@ -66,7 +66,10 @@ If the client never deletes the session, the sandbox pod remains until something
 | `--instance-name` | _(required)_ | Instance id on sandbox labels (`cli-mcp.redhat.com/instance`) |
 | `--sandbox-image` | _(required)_ | Container image for sandbox pods |
 | `--hmac-key-file` | _(required)_ | Path to shared HMAC secret |
-| `--kubeconfig-secret` | _(required)_ | Investigation kubeconfig Secret mounted into sandbox pods |
+| `--kubeconfig-secret` | _(required without proxy flags)_ | Investigation kubeconfig Secret mounted into sandbox pods. Must be empty when `--proxy-service` is set |
+| `--proxy-service` | _(required in-cluster)_ | Credential proxy Service. With `--proxy-ca-secret`, skips the admin Secret mount and fail-closes until the proxy is ready |
+| `--proxy-ca-secret` | _(required with `--proxy-service`)_ | Proxy CA Secret mounted into sandbox pods |
+| `--dummy-kubeconfig-configmap` | _(kubernetes target)_ | Dummy kubeconfig ConfigMap. Omit for allowlist-only |
 | `--sandbox-service-account` | _(required)_ | ServiceAccount name for sandbox pods |
 | `--kubeconfig` | _(in-cluster)_ | Kubeconfig for the MCP process's Kubernetes client (not the investigation Secret) |
 | `--sandbox-cpu-request` | `100m` | Sandbox CPU request |

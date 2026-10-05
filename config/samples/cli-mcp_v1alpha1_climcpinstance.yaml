@@ -11,6 +11,10 @@ spec:
     # image omitted → RELATED_IMAGE_SANDBOX
     idleTimeout: 30m
     warmPoolSize: 0
+  proxy:
+    targets:
+      - type: kubernetes
+        # secretName omitted → Secret cli-mcp-oc-kubeconfig, key kubeconfig
 # Admin must also apply:
 # - Secret cli-mcp-oc-kubeconfig (key kubeconfig)
 # - Secret cli-mcp-oc-tls (tls.crt/tls.key) on generic Kubernetes; OpenShift serving-cert fills this

@@ -428,7 +428,7 @@ This PR does not touch the operator or sandbox mounts (they still mount the real
 - **Verify:** `go test ./pkg/proxy/... ./pkg/kubeconfig/...`; local CONNECT to a fake API with dummy vs real token.
 - **Out of this PR:** operator children, `pkg/session` mount change, MCP Role, Ready parse.
 
-### PR 2 — Operator children + sandbox contract (cutover)
+### PR 2 — Operator children + sandbox contract (cutover) — **done**
 
 Depends on PR 1. **Breaks** in-cluster sandbox `oc` without the proxy. Leaves `/mcp` bash working. Kind e2e `kubeconfig=unused` must become a minimal token-only kubeconfig.
 

@@ -109,9 +109,19 @@ func (r *CliMcpInstanceReconciler) reconcilePool(ctx context.Context, inst *clim
 	if !mutate {
 		return observePool(pods.Items, desired), nil
 	}
+	open, err := r.proxyPoolOpen(ctx, inst)
+	if err != nil {
+		return observePool(pods.Items, desired), err
+	}
+	if !open {
+		return observePool(pods.Items, desired), nil
+	}
 
-	cfg := r.poolSandboxConfig(inst)
-	hash, err := overlayHash(cfg)
+	cfg, dummy, ca, err := r.overlayInputs(ctx, inst)
+	if err != nil {
+		return observePool(pods.Items, desired), err
+	}
+	hash, err := overlayHash(cfg, dummy, ca)
 	if err != nil {
 		return observePool(pods.Items, desired), err
 	}

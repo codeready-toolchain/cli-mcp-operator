@@ -148,6 +148,9 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(args).NotTo(ContainElement("--warm-pool-size"))
 		Expect(args).NotTo(ContainElement("--idle-timeout"))
 		Expect(args).To(ContainElement("--instance-name"))
+		Expect(args).To(ContainElement("--proxy-service"))
+		Expect(args).To(ContainElement("--proxy-ca-secret"))
+		Expect(args).NotTo(ContainElement("--kubeconfig-secret"))
 		Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
 		proxy := deploy.Spec.Template.Spec.Containers[1]
 		Expect(proxy.Args).To(ContainElement("--config-file=" + krpMountPath + "/" + krpConfigKey))
@@ -182,7 +185,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(string(hmac.Data[hmacSecretKey])).To(Equal(firstKey))
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -259,7 +262,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 	It("sets SecretKeysInvalid for empty TLS keys on generic Kubernetes", func() {
 		Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName("oc"), Namespace: ns.Name},
-			Data:       map[string][]byte{kubeconfigDataKey: []byte("dummy")},
+			Data:       map[string][]byte{kubeconfigDataKey: []byte(tokenKubeconfig)},
 		})).To(Succeed())
 		Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName("oc"), Namespace: ns.Name},
@@ -649,19 +652,23 @@ var _ = Describe("CliMcpInstance Controller", func() {
 	})
 
 	It("rejects CR names longer than 44 characters", func() {
-		inst := &climcpv1alpha1.CliMcpInstance{ObjectMeta: metav1.ObjectMeta{
-			Name:      strings.Repeat("a", 45),
-			Namespace: ns.Name,
-		}}
+		inst := &climcpv1alpha1.CliMcpInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      strings.Repeat("a", 45),
+				Namespace: ns.Name,
+			},
+			Spec: climcpv1alpha1.CliMcpInstanceSpec{Proxy: kubernetesProxySpec()},
+		}
 		err := k8sClient.Create(ctx, inst)
 		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("44"))
 	})
 
 	It("sets serving-cert annotation on OpenShift and does not require TLS for Ready", func() {
 		reconciler.OnOpenShift = true
 		Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName("oc"), Namespace: ns.Name},
-			Data:       map[string][]byte{kubeconfigDataKey: []byte("dummy")},
+			Data:       map[string][]byte{kubeconfigDataKey: []byte(tokenKubeconfig)},
 		})).To(Succeed())
 		createInstance(ctx, nn)
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
@@ -672,7 +679,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(svc.Annotations[openshiftServingCertAnnotation]).To(Equal(tlsSecretName("oc")))
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -689,6 +696,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
 			Spec: climcpv1alpha1.CliMcpInstanceSpec{
 				Replicas: 1,
+				Proxy:    kubernetesProxySpec(),
 				Sandbox: climcpv1alpha1.SandboxSpec{
 					IdleTimeout:  metav1.Duration{Duration: 30 * time.Minute},
 					WarmPoolSize: 0,
@@ -709,7 +717,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -744,7 +752,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -856,7 +864,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		markPodReady(ctx, &unassigned[0])
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -872,7 +880,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -889,7 +897,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		markPodReady(ctx, &replaced[0])
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -913,7 +921,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		oldName := unassigned[0].Name
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -953,7 +961,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -976,7 +984,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		markPodReady(ctx, &unassigned[0])
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -993,7 +1001,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -1012,7 +1020,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -1036,7 +1044,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		oldName := unassigned[0].Name
 
 		Eventually(func(g Gomega) {
-			markDeploymentAvailable(ctx, ns.Name, childName("oc"))
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -1074,6 +1082,159 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(replaced).To(HaveLen(1))
 		Expect(replaced[0].Name).NotTo(Equal(oldName))
 	})
+
+	It("keeps a generate-once proxy CA and locks sandbox egress to this instance", func() {
+		createAdminSecrets(ctx, ns.Name)
+		createInstance(ctx, nn)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		ca := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyCASecretName("oc"), Namespace: ns.Name}, ca)).To(Succeed())
+		Expect(ca.Data).To(HaveKey(caCertKey))
+		Expect(ca.Data).To(HaveKey(caKeyKey))
+		Expect(ca.OwnerReferences).To(HaveLen(1))
+		firstCert := string(ca.Data[caCertKey])
+
+		kube := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: kubeconfigSecretName("oc"), Namespace: ns.Name}, kube)).To(Succeed())
+		Expect(kube.OwnerReferences).To(BeEmpty())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, &corev1.ServiceAccount{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, &corev1.Service{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, &networkingv1.NetworkPolicy{})).To(Succeed())
+
+		proxyDeploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, proxyDeploy)).To(Succeed())
+		Expect(proxyDeploy.Spec.Strategy.RollingUpdate.MaxUnavailable.IntVal).To(Equal(int32(0)))
+		Expect(proxyDeploy.Spec.Strategy.RollingUpdate.MaxSurge.IntVal).To(Equal(int32(1)))
+		Expect(proxyDeploy.Spec.Template.Annotations).To(HaveKey(kubeconfigRVAnnotation))
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, cm)).To(Succeed())
+		Expect(cm.Data).To(HaveKey(proxyConfigDataKey))
+		Expect(cm.Data).To(HaveKey(kubeconfigDataKey))
+		Expect(cm.Data[kubeconfigDataKey]).NotTo(ContainSubstring("test-token"))
+
+		sandboxNP := &networkingv1.NetworkPolicy{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sandboxSAName("oc"), Namespace: ns.Name}, sandboxNP)).To(Succeed())
+		Expect(sandboxNP.Spec.PolicyTypes).To(ContainElement(networkingv1.PolicyTypeEgress))
+		Expect(sandboxNP.Spec.PodSelector.MatchLabels).To(Equal(sandboxLabels("oc")))
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyCASecretName("oc"), Namespace: ns.Name}, ca)).To(Succeed())
+		Expect(string(ca.Data[caCertKey])).To(Equal(firstCert))
+	})
+
+	It("sets KubeconfigInvalid and does not write a dummy kubeconfig", func() {
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName("oc"), Namespace: ns.Name},
+			Data:       map[string][]byte{kubeconfigDataKey: []byte("apiVersion: v1\nkind: Config\n")},
+		})).To(Succeed())
+		createTLSSecret(ctx, ns.Name)
+		createInstance(ctx, nn)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		inst := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, inst)).To(Succeed())
+		cond := meta.FindStatusCondition(inst.Status.Conditions, climcpv1alpha1.ConditionReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonKubeconfigInvalid))
+
+		cm := &corev1.ConfigMap{}
+		err = k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, cm)
+		if err == nil {
+			Expect(cm.Data).NotTo(HaveKey(kubeconfigDataKey))
+		} else {
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		}
+	})
+
+	It("goes Ready for allowlist-only with no kubeconfig Secret and no dummy key", func() {
+		inst := &climcpv1alpha1.CliMcpInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
+			Spec: climcpv1alpha1.CliMcpInstanceSpec{
+				Replicas: 1,
+				Proxy: climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
+					Type:    climcpv1alpha1.ProxyTargetAllowlist,
+					Domains: []string{"example.com"},
+				}}},
+				Sandbox: climcpv1alpha1.SandboxSpec{
+					IdleTimeout:  metav1.Duration{Duration: 30 * time.Minute},
+					WarmPoolSize: 0,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, inst)).To(Succeed())
+		createTLSSecret(ctx, ns.Name)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: kubeconfigSecretName("oc"), Namespace: ns.Name}, &corev1.Secret{}))).To(BeTrue())
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, cm)).To(Succeed())
+		Expect(cm.Data).To(HaveKey(proxyConfigDataKey))
+		Expect(cm.Data).NotTo(HaveKey(kubeconfigDataKey))
+
+		Eventually(func(g Gomega) {
+			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			g.Expect(recErr).NotTo(HaveOccurred())
+			got := &climcpv1alpha1.CliMcpInstance{}
+			g.Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
+			cond := meta.FindStatusCondition(got.Status.Conditions, climcpv1alpha1.ConditionReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		}).Should(Succeed())
+	})
+
+	It("does not create pool pods before proxy endpoints are ready", func() {
+		createAdminSecrets(ctx, ns.Name)
+		Expect(k8sClient.Delete(ctx, &corev1.Endpoints{
+			ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: ns.Name},
+		})).To(Succeed())
+		createInstanceWithPool(ctx, nn, 1)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listUnassignedSandbox(ctx, ns.Name)).To(BeEmpty())
+
+		createProxyEndpoints(ctx, ns.Name, "oc")
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(1))
+	})
+
+	It("admits literal proxy domains and rejects wildcards and a second kubernetes target", func() {
+		mk := func(name string, targets []climcpv1alpha1.ProxyTarget) *climcpv1alpha1.CliMcpInstance {
+			return &climcpv1alpha1.CliMcpInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
+				Spec:       climcpv1alpha1.CliMcpInstanceSpec{Proxy: climcpv1alpha1.ProxySpec{Targets: targets}},
+			}
+		}
+		Expect(k8sClient.Create(ctx, mk("two-k", []climcpv1alpha1.ProxyTarget{
+			{Type: climcpv1alpha1.ProxyTargetKubernetes},
+			{Type: climcpv1alpha1.ProxyTargetKubernetes},
+		}))).NotTo(Succeed())
+		Expect(k8sClient.Create(ctx, mk("wild", []climcpv1alpha1.ProxyTarget{{
+			Type:    climcpv1alpha1.ProxyTargetAllowlist,
+			Domains: []string{"*.example.com"},
+		}}))).NotTo(Succeed())
+		Expect(k8sClient.Create(ctx, mk("secname", []climcpv1alpha1.ProxyTarget{{
+			Type:       climcpv1alpha1.ProxyTargetAllowlist,
+			SecretName: "custom-kube",
+			Domains:    []string{"example.com"},
+		}}))).NotTo(Succeed())
+		Expect(k8sClient.Create(ctx, mk("barehost", []climcpv1alpha1.ProxyTarget{{
+			Type:    climcpv1alpha1.ProxyTargetAllowlist,
+			Domains: []string{"api.example.com"},
+		}}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, mk("ipv6", []climcpv1alpha1.ProxyTarget{{
+			Type:    climcpv1alpha1.ProxyTargetAllowlist,
+			Domains: []string{"[2001:db8::1]:443"},
+		}}))).To(Succeed())
+	})
 })
 
 func testImages() Images {
@@ -1081,6 +1242,34 @@ func testImages() Images {
 		Server:        "example.com/cli-mcp-server:test",
 		Sandbox:       "example.com/cli-mcp-sandbox:test",
 		KubeRBACProxy: "example.com/kube-rbac-proxy:test",
+		Proxy:         "example.com/cli-mcp-proxy:test",
+	}
+}
+
+const tokenKubeconfig = `apiVersion: v1
+kind: Config
+current-context: c1
+clusters:
+- name: c1
+  cluster:
+    server: https://api.example.com:6443
+    certificate-authority-data: Y2EtMQ==
+contexts:
+- name: c1
+  context:
+    cluster: c1
+    user: u1
+users:
+- name: u1
+  user:
+    token: test-token
+`
+
+func kubernetesProxySpec() climcpv1alpha1.ProxySpec {
+	return climcpv1alpha1.ProxySpec{
+		Targets: []climcpv1alpha1.ProxyTarget{{
+			Type: climcpv1alpha1.ProxyTargetKubernetes,
+		}},
 	}
 }
 
@@ -1095,6 +1284,7 @@ func createInstanceWithPool(ctx context.Context, nn types.NamespacedName, size i
 		ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
 		Spec: climcpv1alpha1.CliMcpInstanceSpec{
 			Replicas: 1,
+			Proxy:    kubernetesProxySpec(),
 			Sandbox: climcpv1alpha1.SandboxSpec{
 				IdleTimeout:  metav1.Duration{Duration: 30 * time.Minute},
 				WarmPoolSize: size,
@@ -1143,9 +1333,10 @@ func createAdminSecretsFor(ctx context.Context, namespace, instance string) {
 	GinkgoHelper()
 	Expect(k8sClient.Create(ctx, &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName(instance), Namespace: namespace},
-		Data:       map[string][]byte{kubeconfigDataKey: []byte("apiVersion: v1\nkind: Config\n")},
+		Data:       map[string][]byte{kubeconfigDataKey: []byte(tokenKubeconfig)},
 	})).To(Succeed())
 	createTLSSecretFor(ctx, namespace, instance)
+	createProxyEndpoints(ctx, namespace, instance)
 }
 
 func createTLSSecret(ctx context.Context, namespace string) {
@@ -1207,6 +1398,27 @@ func clientMCPAccess(ctx context.Context, authz kubernetes.Interface, namespace,
 	}, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
 	return sar.Status
+}
+
+func markInstanceDeploymentsAvailable(ctx context.Context, namespace, instance string) {
+	GinkgoHelper()
+	markDeploymentAvailable(ctx, namespace, childName(instance))
+	markDeploymentAvailable(ctx, namespace, proxyName(instance))
+}
+
+func createProxyEndpoints(ctx context.Context, namespace, instance string) {
+	GinkgoHelper()
+	ep := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName(instance), Namespace: namespace},
+		Subsets: []corev1.EndpointSubset{{
+			Addresses: []corev1.EndpointAddress{{IP: "10.0.0.8"}},
+		}},
+	}
+	err := k8sClient.Create(ctx, ep)
+	if apierrors.IsAlreadyExists(err) {
+		return
+	}
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func markDeploymentAvailable(ctx context.Context, namespace, name string) {

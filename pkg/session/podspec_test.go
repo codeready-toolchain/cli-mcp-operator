@@ -98,6 +98,74 @@ func TestSelectorsIncludeInstance(t *testing.T) {
 	assert.Equal(t, "cli-mcp-sandbox-auth-sess", AuthSecretName("sess"))
 }
 
+func TestBuildBasePodSpecProxyMode(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.KubeconfigSecret = ""
+	cfg.DummyKubeconfigConfigMap = "cli-mcp-oc-proxy"
+	cfg.ProxyService = "cli-mcp-oc-proxy"
+	cfg.ProxyCASecret = "cli-mcp-oc-proxy-ca"
+	cfg.Env = []corev1.EnvVar{{Name: "HTTPS_PROXY", Value: "http://evil:1"}}
+
+	pod := BuildBasePodSpec("warm", cfg)
+	require.NotNil(t, pod.Spec.AutomountServiceAccountToken)
+	assert.False(t, *pod.Spec.AutomountServiceAccountToken)
+
+	got := envByName(pod.Spec.Containers[0].Env)
+	assert.Equal(t, KubeconfigPath, got["KUBECONFIG"].Value)
+	assert.Equal(t, "http://cli-mcp-oc-proxy:8080", got["HTTPS_PROXY"].Value)
+	assert.Equal(t, "http://cli-mcp-oc-proxy:8080", got["HTTP_PROXY"].Value)
+	assert.Equal(t, "http://cli-mcp-oc-proxy:8080", got["https_proxy"].Value)
+	assert.Equal(t, "http://cli-mcp-oc-proxy:8080", got["http_proxy"].Value)
+	assert.Equal(t, NoProxyValue, got["NO_PROXY"].Value)
+	assert.Equal(t, NoProxyValue, got["no_proxy"].Value)
+	assert.Equal(t, ProxyCAFile, got["SSL_CERT_FILE"].Value)
+	assert.Equal(t, ProxyCAFile, got["REQUESTS_CA_BUNDLE"].Value)
+
+	var kubeMount corev1.VolumeMount
+	var caMount corev1.VolumeMount
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		switch mount.Name {
+		case "kubeconfig":
+			kubeMount = mount
+		case "proxy-ca":
+			caMount = mount
+		}
+	}
+	assert.Equal(t, KubeconfigPath, kubeMount.MountPath)
+	assert.Equal(t, "kubeconfig", kubeMount.SubPath)
+	assert.Equal(t, ProxyCAFile, caMount.MountPath)
+	assert.Equal(t, "ca.crt", caMount.SubPath)
+
+	require.NotNil(t, pod.Spec.Volumes[0].ConfigMap)
+	assert.Equal(t, "cli-mcp-oc-proxy", pod.Spec.Volumes[0].ConfigMap.Name)
+}
+
+func TestBuildBasePodSpecAllowlistOmitsKubeconfig(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.KubeconfigSecret = ""
+	cfg.ProxyService = "cli-mcp-oc-proxy"
+	cfg.ProxyCASecret = "cli-mcp-oc-proxy-ca"
+
+	pod := BuildBasePodSpec("warm", cfg)
+	got := envByName(pod.Spec.Containers[0].Env)
+	_, hasKube := got["KUBECONFIG"]
+	assert.False(t, hasKube)
+	assert.Equal(t, "http://cli-mcp-oc-proxy:8080", got["HTTPS_PROXY"].Value)
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		assert.NotEqual(t, "kubeconfig", mount.Name)
+	}
+	var ca *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		assert.NotEqual(t, "kubeconfig", pod.Spec.Volumes[i].Name)
+		if pod.Spec.Volumes[i].Name == "proxy-ca" {
+			ca = &pod.Spec.Volumes[i]
+		}
+	}
+	require.NotNil(t, ca)
+	require.NotNil(t, ca.Secret)
+	assert.Equal(t, "cli-mcp-oc-proxy-ca", ca.Secret.SecretName)
+}
+
 func TestDefaultConfigHasNoIdentityDefaults(t *testing.T) {
 	cfg := DefaultConfig()
 	assert.Empty(t, cfg.Namespace)

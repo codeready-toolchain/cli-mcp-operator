@@ -20,7 +20,15 @@ func buildSandboxConfig(cfg runConfig, hmacKey string) (session.SandboxConfig, e
 	if cfg.instanceName == "" {
 		return session.SandboxConfig{}, fmt.Errorf("--instance-name is required")
 	}
-	if cfg.kubeconfigSecret == "" {
+	proxyMode := cfg.proxyService != "" || cfg.proxyCASecret != "" || cfg.dummyKubeconfigConfigMap != ""
+	if proxyMode {
+		if cfg.proxyService == "" || cfg.proxyCASecret == "" {
+			return session.SandboxConfig{}, fmt.Errorf("--proxy-service and --proxy-ca-secret are required together")
+		}
+		if cfg.kubeconfigSecret != "" {
+			return session.SandboxConfig{}, fmt.Errorf("--kubeconfig-secret must be empty when proxy flags are set")
+		}
+	} else if cfg.kubeconfigSecret == "" {
 		return session.SandboxConfig{}, fmt.Errorf("--kubeconfig-secret is required")
 	}
 	if cfg.sandboxServiceAccount == "" {
@@ -54,19 +62,22 @@ func buildSandboxConfig(cfg runConfig, hmacKey string) (session.SandboxConfig, e
 	}
 
 	return session.SandboxConfig{
-		Image:              cfg.sandboxImage,
-		HMACKey:            hmacKey,
-		Namespace:          cfg.namespace,
-		InstanceName:       cfg.instanceName,
-		ServiceAccountName: cfg.sandboxServiceAccount,
-		KubeconfigSecret:   cfg.kubeconfigSecret,
-		CPURequest:         cpuRequest,
-		CPULimit:           cpuLimit,
-		MemoryRequest:      memoryRequest,
-		MemoryLimit:        memoryLimit,
-		ImagePullPolicy:    pullPolicy,
-		Env:                env,
-		AgentPort:          defaults.AgentPort,
+		Image:                    cfg.sandboxImage,
+		HMACKey:                  hmacKey,
+		Namespace:                cfg.namespace,
+		InstanceName:             cfg.instanceName,
+		ServiceAccountName:       cfg.sandboxServiceAccount,
+		KubeconfigSecret:         cfg.kubeconfigSecret,
+		DummyKubeconfigConfigMap: cfg.dummyKubeconfigConfigMap,
+		ProxyService:             cfg.proxyService,
+		ProxyCASecret:            cfg.proxyCASecret,
+		CPURequest:               cpuRequest,
+		CPULimit:                 cpuLimit,
+		MemoryRequest:            memoryRequest,
+		MemoryLimit:              memoryLimit,
+		ImagePullPolicy:          pullPolicy,
+		Env:                      env,
+		AgentPort:                defaults.AgentPort,
 	}, nil
 }
 

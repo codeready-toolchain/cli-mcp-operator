@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 
+	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -27,6 +28,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+const kubeconfigSecretIndex = "spec.proxy.effectiveKubeconfig"
+
+func indexEffectiveKubeconfig(obj client.Object) []string {
+	inst, ok := obj.(*climcpv1alpha1.CliMcpInstance)
+	if !ok {
+		return nil
+	}
+	name, ok := effectiveKubeconfigSecretName(inst)
+	if !ok {
+		return nil
+	}
+	return []string{name}
+}
 
 func isSandboxPod(obj client.Object) bool {
 	pod, ok := obj.(*corev1.Pod)
@@ -86,6 +101,10 @@ func poolReadinessChanged(oldPod, newPod *corev1.Pod) bool {
 	return poolPodUnhealthy(*oldPod) != poolPodUnhealthy(*newPod)
 }
 
+func enqueueSandboxPod() handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(mapSandboxPod)
+}
+
 func mapSandboxPod(_ context.Context, obj client.Object) []reconcile.Request {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
@@ -121,10 +140,34 @@ func mapSecret(_ context.Context, obj client.Object) []reconcile.Request {
 	}}
 }
 
-func enqueueSandboxPod() handler.EventHandler {
-	return handler.EnqueueRequestsFromMapFunc(mapSandboxPod)
+func (r *CliMcpInstanceReconciler) mapSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	reqs := mapSecret(ctx, obj)
+	secret, ok := obj.(*corev1.Secret)
+	if !ok || r.Client == nil {
+		return reqs
+	}
+	var list climcpv1alpha1.CliMcpInstanceList
+	if err := r.List(ctx, &list, client.InNamespace(secret.Namespace), client.MatchingFields{kubeconfigSecretIndex: secret.Name}); err != nil {
+		return reqs
+	}
+	for i := range list.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      list.Items[i].Name,
+			Namespace: list.Items[i].Namespace,
+		}})
+	}
+	return dedupeRequests(reqs)
 }
 
-func enqueueSecret() handler.EventHandler {
-	return handler.EnqueueRequestsFromMapFunc(mapSecret)
+func dedupeRequests(reqs []reconcile.Request) []reconcile.Request {
+	seen := make(map[types.NamespacedName]struct{}, len(reqs))
+	out := make([]reconcile.Request, 0, len(reqs))
+	for _, req := range reqs {
+		if _, ok := seen[req.NamespacedName]; ok {
+			continue
+		}
+		seen[req.NamespacedName] = struct{}{}
+		out = append(out, req)
+	}
+	return out
 }

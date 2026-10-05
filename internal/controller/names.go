@@ -19,6 +19,7 @@ package controller
 import (
 	"strings"
 
+	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
 )
 
@@ -48,7 +49,18 @@ const (
 
 	hmacRVAnnotation         = "cli-mcp.redhat.com/hmac-resource-version"
 	krpRVAnnotation          = "cli-mcp.redhat.com/krp-resource-version"
+	proxyRoutesRVAnnotation  = "cli-mcp.redhat.com/proxy-routes-resource-version"
+	proxyCARVAnnotation      = "cli-mcp.redhat.com/proxy-ca-resource-version"
+	kubeconfigRVAnnotation   = "cli-mcp.redhat.com/kubeconfig-resource-version"
 	sandboxOverlayAnnotation = "cli-mcp.redhat.com/sandbox-overlay"
+
+	caCertKey           = "ca.crt"
+	caKeyKey            = "ca.key"
+	proxyConfigDataKey  = "proxy-config.json"
+	proxyKubeconfigPath = "/etc/kube/config"
+
+	proxyPreStopSeconds   = int64(5)
+	proxyTerminationGrace = int64(30)
 
 	authDelegatorCRBName     = "cli-mcp-auth-delegator"
 	authDelegatorClusterRole = "system:auth-delegator"
@@ -94,6 +106,14 @@ func krpConfigMapName(instance string) string {
 	return childNamePrefix + instance + krpNameSuffix
 }
 
+func proxyName(instance string) string {
+	return childNamePrefix + instance + "-proxy"
+}
+
+func proxyCASecretName(instance string) string {
+	return proxyName(instance) + "-ca"
+}
+
 func instanceLabels(instance string) map[string]string {
 	return map[string]string{session.LabelInstance: instance}
 }
@@ -116,6 +136,29 @@ func sandboxLabels(instance string) map[string]string {
 		session.LabelInstance:  instance,
 		session.LabelComponent: session.ComponentSandbox,
 	}
+}
+
+func proxyLabels(instance string) map[string]string {
+	return map[string]string{
+		session.LabelInstance:  instance,
+		session.LabelComponent: session.ComponentProxy,
+	}
+}
+
+// effectiveKubeconfigSecretName is the admin kubeconfig Secret for a kubernetes
+// target. The bool is false when the instance has no kubernetes target.
+// An empty secretName stays empty in the spec; the conventional name is computed here.
+func effectiveKubeconfigSecretName(inst *climcpv1alpha1.CliMcpInstance) (string, bool) {
+	for _, target := range inst.Spec.Proxy.Targets {
+		if target.Type != climcpv1alpha1.ProxyTargetKubernetes {
+			continue
+		}
+		if target.SecretName != "" {
+			return target.SecretName, true
+		}
+		return kubeconfigSecretName(inst.Name), true
+	}
+	return "", false
 }
 
 // instanceFromAdminSecret returns the CR name encoded in conventional

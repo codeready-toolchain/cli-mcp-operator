@@ -265,9 +265,28 @@ var _ = Describe("Manager", Ordered, func() {
 	Context("CliMcpInstance", func() {
 		It("should create MCP children for a pool-0 instance", func() {
 			By("creating the investigation kubeconfig Secret")
+			kubeconfigFile := filepath.Join(os.TempDir(), "cli-mcp-e2e-kubeconfig")
+			Expect(os.WriteFile(kubeconfigFile, []byte(`apiVersion: v1
+kind: Config
+current-context: c1
+clusters:
+- name: c1
+  cluster:
+    server: https://api.example.com:6443
+    certificate-authority-data: Y2EtMQ==
+contexts:
+- name: c1
+  context:
+    cluster: c1
+    user: u1
+users:
+- name: u1
+  user:
+    token: test-token
+`), 0o600)).To(Succeed())
 			cmd := exec.Command("kubectl", "create", "secret", "generic", "cli-mcp-oc-kubeconfig",
 				"-n", namespace,
-				"--from-literal=kubeconfig=unused")
+				"--from-file=kubeconfig="+kubeconfigFile)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -284,7 +303,7 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for HMAC Secret, Deployment, Service, sandbox SA, and NetworkPolicy")
+			By("waiting for HMAC Secret, MCP children, and proxy children")
 			Eventually(func(g Gomega) {
 				for _, args := range [][]string{
 					{"get", "secret", "cli-mcp-oc-hmac", "-n", namespace},
@@ -293,6 +312,12 @@ var _ = Describe("Manager", Ordered, func() {
 					{"get", "sa", "cli-mcp-oc-sandbox", "-n", namespace},
 					{"get", "networkpolicy", "cli-mcp-oc-sandbox", "-n", namespace},
 					{"get", "role", "cli-mcp-oc", "-n", namespace},
+					{"get", "sa", "cli-mcp-oc-proxy", "-n", namespace},
+					{"get", "deploy", "cli-mcp-oc-proxy", "-n", namespace},
+					{"get", "svc", "cli-mcp-oc-proxy", "-n", namespace},
+					{"get", "networkpolicy", "cli-mcp-oc-proxy", "-n", namespace},
+					{"get", "configmap", "cli-mcp-oc-proxy", "-n", namespace},
+					{"get", "secret", "cli-mcp-oc-proxy-ca", "-n", namespace},
 				} {
 					c := exec.Command("kubectl", args...)
 					_, err := utils.Run(c)
