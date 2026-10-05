@@ -127,9 +127,21 @@ func TestKubePathDenied(t *testing.T) {
 		{path: "/api/v1/namespaces/ns/pods/p/attach", deny: true},
 		{path: "/api/v1/namespaces/ns/pods/p/portforward", deny: true},
 		{path: "/api/v1/namespaces/ns/pods/p/proxy/metrics", deny: true},
+		{path: "/api/v1/nodes/node/proxy/stats/summary", deny: true},
+		{path: "/api/v1/namespaces/ns/services/svc:443/proxy/health", deny: true},
+		{path: "/api/v1/proxy/namespaces/ns/pods/p/log", deny: true},
+		{path: "/api/v1/watch/namespaces/ns/pods/p/log", deny: false},
+		{path: "/api/v1/watch/namespaces/ns/pods/p/exec", deny: true},
 		{path: "/api/v1/namespaces/ns/pods/p/execution", deny: false},
+		{path: "/api/v1/namespaces/ns/pods/proxy/log", deny: false},
+		{path: "/api/v1/namespaces/exec", deny: false},
+		{path: "/api/v1/namespaces/exec/pods", deny: false},
+		{path: "/api/v1/namespaces/exec/status", deny: false},
+		{path: "/apis/apps/v1/namespaces/ns/deployments/proxy", deny: false},
+		{path: "/apis/apps/v1/namespaces/ns/deployments/proxy/status", deny: false},
 		{path: "/api/v1/pods/foo/exec/../log", deny: false},
-		{path: "/api/v1/pods/foo/log/../../exec", deny: true},
+		{path: "/api/v1/pods/foo/log/../../exec", deny: false},
+		{path: "/api/v1/namespaces/ns/pods/foo/log/../../p/exec", deny: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

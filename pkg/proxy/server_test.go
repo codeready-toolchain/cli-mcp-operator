@@ -337,7 +337,7 @@ func TestHandlerUsesHostHeaderWhenURLHostEmpty(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(proxy.CloseIdleConnections)
 
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.example.com:6443/exec", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://api.example.com:6443/api/v1/namespaces/ns/pods/p/exec", nil)
 	req.URL.Host = ""
 	req.Host = "api.example.com:6443"
 	rec := httptest.NewRecorder()
