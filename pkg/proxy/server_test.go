@@ -215,6 +215,28 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 	t.Cleanup(func() { _ = deniedResp.Body.Close() })
 	assert.Equal(t, http.StatusForbidden, deniedResp.StatusCode)
 	assert.Len(t, seen.snapshot(), 1)
+
+	t.Run("different CA sends nothing", func(t *testing.T) {
+		otherCA, _, _, _ := generateCA(t, elliptic.P256())
+		badCfg := kubeConfig(t, host, otherCA)
+		badProxyCA, badProxyKey, badProxyCert, _ := generateCA(t, elliptic.P256())
+		badSrv := startProxy(t, mustProxyRoutes(t, badCfg, writeKubeconfig(t, badCfg)), &caFiles{cert: badProxyCA, key: badProxyKey})
+
+		raw := connectOK(t, badSrv.Listener.Addr().String(), host)
+		clientTLS := tlsClient(t, raw, badProxyCert, "127.0.0.1")
+		require.NoError(t, clientTLS.HandshakeContext(t.Context()))
+
+		stolen, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+host+"/api/v1/namespaces/ns/pods", nil)
+		require.NoError(t, err)
+		stolen.Header.Set("Authorization", "Bearer stolen")
+		require.NoError(t, stolen.Write(clientTLS))
+		resp, err := http.ReadResponse(bufio.NewReader(clientTLS), stolen)
+		if err == nil {
+			t.Cleanup(func() { _ = resp.Body.Close() })
+			assert.NotEqual(t, http.StatusAccepted, resp.StatusCode)
+		}
+		assert.Len(t, seen.snapshot(), 1)
+	})
 }
 
 func TestNewServerRejectsCA(t *testing.T) {
