@@ -213,6 +213,13 @@ func TestValidateRejects(t *testing.T) {
 			wantErr: "no server",
 		},
 		{
+			name: "http server",
+			mutate: func(cfg *clientcmdapi.Config) {
+				cfg.Clusters["c1"].Server = "http://api:8080"
+			},
+			wantErr: "https",
+		},
+		{
 			name: "ca file",
 			mutate: func(cfg *clientcmdapi.Config) {
 				cfg.Clusters["c1"].CertificateAuthority = "/etc/kubernetes/ca.crt"

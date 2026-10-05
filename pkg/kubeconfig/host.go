@@ -33,12 +33,15 @@ func CanonicalHostPort(hostport string) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(p)), nil
 }
 
-// HostPortFromServerURL extracts host:port from a kubeconfig server URL.
-// A missing port defaults to 443.
+// HostPortFromServerURL extracts host:port from an https kubeconfig server URL.
+// A missing port defaults to 443. Any other scheme is rejected.
 func HostPortFromServerURL(server string) (string, error) {
 	u, err := url.Parse(server)
 	if err != nil {
 		return "", fmt.Errorf("parse server URL %q: %w", server, err)
+	}
+	if u.Scheme != "https" {
+		return "", fmt.Errorf("server URL %q must use https", server)
 	}
 	host := u.Hostname()
 	if host == "" {
