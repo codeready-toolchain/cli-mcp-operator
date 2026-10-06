@@ -789,6 +789,35 @@ func TestReconcilePoolLeavesPodsWhenProxyGateIsClosed(t *testing.T) {
 		require.NoError(t, c.List(t.Context(), &pods, client.InNamespace("ns"), client.MatchingLabels(sandboxLabels("oc"))))
 		assert.Empty(t, pods.Items)
 	})
+
+	t.Run("zero warm pool deletes unassigned pods without proxy objects", func(t *testing.T) {
+		t.Parallel()
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+		inst := poolInstance()
+		inst.Spec.Sandbox.WarmPoolSize = 0
+		inst.Spec.Proxy = kubernetesProxySpec()
+		stale := sandboxPod("stale", "", time.Now().Add(-time.Minute), time.Now())
+		stale.Annotations[sandboxOverlayAnnotation] = "old"
+		assigned := sandboxPod("assigned", "sess", time.Now(), time.Now())
+		terminating := sandboxPod("dying", "", time.Now(), time.Now())
+		ts := metav1.Now()
+		terminating.DeletionTimestamp = &ts
+		terminating.Finalizers = []string{"cli-mcp.redhat.com/test"}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			stale.DeepCopy(), assigned.DeepCopy(), terminating.DeepCopy(),
+		).Build()
+		r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
+
+		snap, err := r.reconcilePool(t.Context(), inst, true)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), snap.desired)
+		assert.False(t, snap.proxyGateClosed)
+		assert.False(t, snap.overlayRebuild)
+		assert.True(t, apierrors.IsNotFound(c.Get(t.Context(), types.NamespacedName{Name: "stale", Namespace: "ns"}, &corev1.Pod{})))
+		require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: "assigned", Namespace: "ns"}, &corev1.Pod{}))
+		require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: "dying", Namespace: "ns"}, &corev1.Pod{}))
+	})
 }
 
 func poolGateScheme(t *testing.T) *runtime.Scheme {
