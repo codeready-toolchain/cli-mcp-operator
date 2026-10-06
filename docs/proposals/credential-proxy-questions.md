@@ -123,18 +123,18 @@ The operator creates unassigned pool pods. MCP claims those or creates on demand
 
 ### Option A: Operator gates the pool; MCP gates on-demand create by GET of named children (flags, not CR)
 
-Operator: do not create/replenish unassigned pods until the routes ConfigMap exists (dummy `kubeconfig` key when a kubernetes target exists), sandbox NP has Egress, proxy NP exists, and the proxy Service has Ready endpoints. Overlay/hash rebuild waits on the same gate.
+Operator: do not create/replenish unassigned pods until the routes ConfigMap exists (dummy `kubeconfig` key when a kubernetes target exists), sandbox NP has Egress, proxy NP exists, and this proxy Service has a ready EndpointSlice address. Another Service’s slice must not open the gate. Overlay/hash rebuild waits on the same gate.
 
-MCP: operator injects `--proxy-service` and `--proxy-ca-secret` always and `--dummy-kubeconfig-configmap` when a kubernetes target exists (conventional names; not spec fields). Before **on-demand create**, GET Endpoints of that Service (ready addresses) and GET the sandbox NetworkPolicy (must include `policyTypes: Egress`). Cache with a short TTL. **Claim** of an unassigned pod is allowed only if that gate passes too (do not claim a leftover pre-lock pool pod). Discovering an already-assigned session pod is unchanged.
+MCP: operator injects `--proxy-service` and `--proxy-ca-secret` always and `--dummy-kubeconfig-configmap` when a kubernetes target exists (conventional names; not spec fields). Before **on-demand create**, list EndpointSlices for that Service (`kubernetes.io/service-name`) and GET the sandbox NetworkPolicy (must include `policyTypes: Egress`). A ready address is `conditions.ready` nil or true with a non-empty address. Cache with a short TTL. **Claim** of an unassigned pod is allowed only if that gate passes too (do not claim a leftover pre-lock pool pod). Discovering an already-assigned session pod is unchanged.
 
-MCP Role gains `get` on `endpoints` with `resourceNames: [cli-mcp-<name>-proxy]` and `get` on `networkpolicies` with `resourceNames: [cli-mcp-<name>-sandbox]` (still **no** secret get/list/watch). The operator holds `endpoints` `get` with no `resourceNames` on `manager-namespaced-role` and CSV `permissions`: one Role must read every instance’s Endpoints, and an unnamed rule is what covers granting that named subset (same escalation check as `climcpinstances/mcp` on `manager-role` covering the client Role). `networkpolicies` `get` is already unnamed on the namespaced Role. Leave `climcpinstances/mcp` `get`/`create`/`delete` on ClusterRole `manager-role`. Local `cmd/server` without those flags keeps today’s real kubeconfig mount and does not gate (runnable without the operator).
+MCP Role gains `list` on `endpointslices` (`discovery.k8s.io`) with no `resourceNames`, and `get` on `networkpolicies` with `resourceNames: [cli-mcp-<name>-sandbox]` (still **no** secret get). Slice object names are generated, so a named `get` cannot be scoped. The operator holds the same `endpointslices` `list` with no `resourceNames` on `manager-namespaced-role` and CSV `permissions`: one Role must read every instance, and that verb is what covers granting it on the MCP Role (same escalation check as `climcpinstances/mcp` on `manager-role` covering the client Role). `networkpolicies` `get` is already unnamed on the namespaced Role. Leave `climcpinstances/mcp` `get`/`create`/`delete` on ClusterRole `manager-role`. Do not add `endpoints` or `endpointslices` to the ClusterRole. Local `cmd/server` without those flags keeps today’s real kubeconfig mount and does not gate (runnable without the operator).
 
 - **Pro:** Neither writer can open an unrestricted sandbox. MCP still does not watch the CR. Matches “flags from the operator.”
-- **Con:** MCP Role is broader (get NP + endpoints). First `bash` waits on proxy readiness (acceptable).
+- **Con:** MCP Role is broader (list EndpointSlices in the namespace + get the sandbox NetworkPolicy). The label selector is what keeps another Service from opening the gate. First `bash` waits on proxy readiness (acceptable).
 
-**Decision:** Option A — operator gates the pool; MCP GETs named Endpoints + sandbox NetworkPolicy before on-demand create and before claim. Assigned sessions are not gated (Q11). Local without proxy flags does not gate.
+**Decision:** Option A — operator gates the pool; MCP lists this Service's EndpointSlices and GETs the sandbox NetworkPolicy before on-demand create and before claim. Assigned sessions are not gated (Q11). Local without proxy flags does not gate.
 
-_Considered and rejected: Option B (withhold MCP Deployment only — running replicas still create open sandboxes), Option C (namespace default-deny — operator Q11)._
+_Considered and rejected: Option B (withhold MCP Deployment only — running replicas still create open sandboxes), Option C (namespace default-deny — operator Q11), named core Endpoints `get` (`v1.Endpoints` is deprecated, and a generated EndpointSlice name cannot be `resourceNames`-scoped)._
 
 ---
 
@@ -247,7 +247,7 @@ Mechanism:
 
 - Never delete assigned sandbox pods on spec change (already locked).
 - MCP Deployment rolls on its own; `/mcp` stays up when `spec.replicas ≥ 2` (existing MCP strategy). Sessions are not in those pods.
-- Proxy Deployment: `replicas: 1`, **`maxUnavailable: 0`, `maxSurge: 1`**. Stamp **routes ConfigMap** RV + kubeconfig Secret RV + CA RV on the proxy pod template so kube starts a new proxy, waits Ready, then drops the old one. No inotify reload of kubeconfig/CA. Proxy process: `Shutdown` on SIGTERM (like claw), `terminationGracePeriodSeconds` covering that window, short `preStop` so Endpoints drop before the process dies. No sandbox retry wrapper; do not retry CONNECT **403**.
+- Proxy Deployment: `replicas: 1`, **`maxUnavailable: 0`, `maxSurge: 1`**. Stamp **routes ConfigMap** RV + kubeconfig Secret RV + CA RV on the proxy pod template so kube starts a new proxy, waits Ready, then drops the old one. No inotify reload of kubeconfig/CA. Proxy process: `Shutdown` on SIGTERM (like claw), `terminationGracePeriodSeconds` covering that window, short `preStop` so ready addresses drop before the process dies. No sandbox retry wrapper; do not retry CONNECT **403**.
 - Dummy kubeconfig and proxy CA on sandboxes: mount the data keys as **`subPath`** so assigned pods keep the files they started with. Unassigned pool hash-rebuilds when dummy/`ca.crt` **bytes** or proxy env change (not when the investigation Secret RV changes).
 - NetworkPolicy is a live object: **add** rules only for v1 (sandbox egress to proxy). Do not tighten under running pods as part of a “safe” edit.
 

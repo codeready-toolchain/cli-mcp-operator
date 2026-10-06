@@ -1197,8 +1197,9 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: ns.Name},
 		})).To(Succeed())
 		createInstanceWithPool(ctx, nn, 1)
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(proxyGateRetry))
 		Expect(listUnassignedSandbox(ctx, ns.Name)).To(BeEmpty())
 
 		createProxyEndpoints(ctx, ns.Name, "oc")

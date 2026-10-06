@@ -658,6 +658,15 @@ func TestPoolRequeueAfter(t *testing.T) {
 		assert.Equal(t, time.Duration(0), poolRequeueAfter(inst, unhealthy, now))
 	})
 
+	t.Run("retries soon when the proxy gate is closed and a pool is desired", func(t *testing.T) {
+		t.Parallel()
+		now := time.Date(2025, 1, 1, 12, 1, 0, 0, time.UTC)
+		closed := poolSnapshot{desired: 1, proxyGateClosed: true}
+		assert.Equal(t, proxyGateRetry, poolRequeueAfter(&climcpv1alpha1.CliMcpInstance{}, closed, now))
+		full := poolSnapshot{desired: 1, ready: 1, proxyGateClosed: true}
+		assert.Equal(t, proxyGateRetry, poolRequeueAfter(base(), full, now))
+	})
+
 	t.Run("returns 0 when instance is not Ready yet", func(t *testing.T) {
 		t.Parallel()
 		inst := &climcpv1alpha1.CliMcpInstance{
@@ -755,6 +764,7 @@ func TestReconcilePoolLeavesPodsWhenProxyGateIsClosed(t *testing.T) {
 		snap, err := r.reconcilePool(t.Context(), inst, true)
 		require.NoError(t, err)
 		assert.False(t, snap.overlayRebuild)
+		assert.True(t, snap.proxyGateClosed)
 		require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: "stale", Namespace: "ns"}, &corev1.Pod{}))
 	})
 
@@ -772,8 +782,9 @@ func TestReconcilePoolLeavesPodsWhenProxyGateIsClosed(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy()}, objs...)...).Build()
 		r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
 
-		_, err := r.reconcilePool(t.Context(), inst, true)
+		snap, err := r.reconcilePool(t.Context(), inst, true)
 		require.NoError(t, err)
+		assert.True(t, snap.proxyGateClosed)
 		var pods corev1.PodList
 		require.NoError(t, c.List(t.Context(), &pods, client.InNamespace("ns"), client.MatchingLabels(sandboxLabels("oc"))))
 		assert.Empty(t, pods.Items)

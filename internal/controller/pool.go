@@ -41,14 +41,18 @@ const (
 	// after first Ready before aggregate Ready is cleared. First Ready and
 	// overlay/size-increase waits are not deadline-bounded.
 	poolReplenishDeadline = 5 * time.Minute
+	// proxyGateRetry is the wait before looking again when the proxy gate is
+	// closed and a warm pool is desired. EndpointSlice updates are not watched.
+	proxyGateRetry = 2 * time.Second
 )
 
 type poolSnapshot struct {
-	desired        int32
-	ready          int32
-	unhealthy      bool
-	unhealthyMsg   string
-	overlayRebuild bool
+	desired         int32
+	ready           int32
+	unhealthy       bool
+	unhealthyMsg    string
+	overlayRebuild  bool
+	proxyGateClosed bool
 }
 
 func isAssignedSandbox(pod corev1.Pod) bool {
@@ -114,7 +118,9 @@ func (r *CliMcpInstanceReconciler) reconcilePool(ctx context.Context, inst *clim
 		return observePool(pods.Items, desired), err
 	}
 	if !open {
-		return observePool(pods.Items, desired), nil
+		snap := observePool(pods.Items, desired)
+		snap.proxyGateClosed = desired > 0
+		return snap, nil
 	}
 
 	cfg, dummy, ca, err := r.overlayInputs(ctx, inst)
@@ -312,6 +318,9 @@ func shortfallPastDeadline(orig *climcpv1alpha1.CliMcpInstance, now time.Time) b
 }
 
 func poolRequeueAfter(orig *climcpv1alpha1.CliMcpInstance, pool poolSnapshot, now time.Time) time.Duration {
+	if pool.proxyGateClosed {
+		return proxyGateRetry
+	}
 	if pool.desired == 0 || pool.unhealthy || pool.ready >= pool.desired {
 		return 0
 	}
