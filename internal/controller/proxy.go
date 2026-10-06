@@ -98,7 +98,9 @@ func (r *CliMcpInstanceReconciler) applyProxy(ctx context.Context, inst *climcpv
 		return err
 	}
 	if !caUsable(ca) || len(build.routes) == 0 {
-		return nil
+		// A running proxy already loaded the previous token. Empty routes cannot
+		// replace it: the new pod would never become Ready, and maxUnavailable is 0.
+		return r.quiesceUnroutedProxy(ctx, inst)
 	}
 	cm, err := r.applyProxyConfigMap(ctx, inst, build)
 	if err != nil {
@@ -106,6 +108,103 @@ func (r *CliMcpInstanceReconciler) applyProxy(ctx context.Context, inst *climcpv
 	}
 	build.cm = cm
 	return r.applyProxyDeployment(ctx, inst, build)
+}
+
+// quiesceUnroutedProxy stops a proxy that no longer has routes and drops the
+// published dummy kubeconfig so the pool gate closes. It does not create
+// children that were never published.
+func (r *CliMcpInstanceReconciler) quiesceUnroutedProxy(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	if err := r.dropPublishedKubeconfig(ctx, inst); err != nil {
+		return err
+	}
+	return r.scaleProxyToZero(ctx, inst)
+}
+
+func (r *CliMcpInstanceReconciler) dropPublishedKubeconfig(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	cm := &corev1.ConfigMap{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: inst.Namespace, Name: proxyName(inst.Name)}, cm)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get proxy configmap: %w", err)
+	}
+	raw, err := json.Marshal(proxyRouteFile{Routes: []kubeconfig.ProxyRoute{}})
+	if err != nil {
+		return fmt.Errorf("marshal empty proxy routes: %w", err)
+	}
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	if cm.Data[proxyConfigDataKey] == string(raw) && cm.Data[kubeconfigDataKey] == "" {
+		return nil
+	}
+	cm.Data = map[string]string{proxyConfigDataKey: string(raw)}
+	if err := r.Update(ctx, cm); err != nil {
+		return fmt.Errorf("clear proxy configmap: %w", err)
+	}
+	return nil
+}
+
+func (r *CliMcpInstanceReconciler) scaleProxyToZero(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {
+	deploy := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: inst.Namespace, Name: proxyName(inst.Name)}, deploy)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get proxy deployment: %w", err)
+	}
+	if !quiesceProxyDeployment(deploy) {
+		return nil
+	}
+	if err := r.Update(ctx, deploy); err != nil {
+		return fmt.Errorf("scale proxy deployment to zero: %w", err)
+	}
+	return nil
+}
+
+func quiesceProxyDeployment(deploy *appsv1.Deployment) bool {
+	changed := false
+	if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 0 {
+		zero := int32(0)
+		deploy.Spec.Replicas = &zero
+		changed = true
+	}
+	if deploy.Spec.Template.Annotations != nil {
+		if _, ok := deploy.Spec.Template.Annotations[kubeconfigRVAnnotation]; ok {
+			delete(deploy.Spec.Template.Annotations, kubeconfigRVAnnotation)
+			changed = true
+		}
+	}
+	spec := &deploy.Spec.Template.Spec
+	volumes := make([]corev1.Volume, 0, len(spec.Volumes))
+	for _, vol := range spec.Volumes {
+		if vol.Name == "kubeconfig" {
+			changed = true
+			continue
+		}
+		volumes = append(volumes, vol)
+	}
+	if len(volumes) != len(spec.Volumes) {
+		spec.Volumes = volumes
+	}
+	for i := range spec.Containers {
+		mounts := make([]corev1.VolumeMount, 0, len(spec.Containers[i].VolumeMounts))
+		dropped := false
+		for _, mount := range spec.Containers[i].VolumeMounts {
+			if mount.Name == "kubeconfig" {
+				dropped = true
+				changed = true
+				continue
+			}
+			mounts = append(mounts, mount)
+		}
+		if dropped {
+			spec.Containers[i].VolumeMounts = mounts
+		}
+	}
+	return changed
 }
 
 func (r *CliMcpInstanceReconciler) applyProxySA(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) error {

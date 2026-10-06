@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
@@ -160,6 +161,81 @@ func TestApplyProxyMountsNamedSecretAndIgnoresTokenRotation(t *testing.T) {
 	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: proxyName("oc"), Namespace: "ns"}, deploy))
 	assert.Equal(t, kube.ResourceVersion, deploy.Spec.Template.Annotations[kubeconfigRVAnnotation])
 	assert.NotEqual(t, firstStamp, deploy.Spec.Template.Annotations[kubeconfigRVAnnotation])
+}
+
+func TestApplyProxyStopsWhenKubeconfigBecomesUnusable(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		breakKube func(c *corev1.Secret)
+		remove    bool
+	}{
+		{name: "stops parsing", breakKube: func(kube *corev1.Secret) {
+			kube.Data[kubeconfigDataKey] = []byte("not: kubeconfig: [[[")
+		}},
+		{name: "emptied", breakKube: func(kube *corev1.Secret) {
+			kube.Data[kubeconfigDataKey] = nil
+		}},
+		{name: "deleted", remove: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			scheme := proxyApplyScheme(t)
+			inst := testInstance("oc", "ns")
+			inst.Spec.Proxy = kubernetesProxySpec()
+			kube := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName("oc"), Namespace: "ns"},
+				Data:       map[string][]byte{kubeconfigDataKey: []byte(tokenKubeconfig)},
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inst.DeepCopy(), kube.DeepCopy()).Build()
+			r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme, Images: testImages()}
+			require.NoError(t, r.applyProxy(t.Context(), inst))
+
+			if tc.remove {
+				require.NoError(t, c.Delete(t.Context(), kube))
+			} else {
+				require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: kube.Name, Namespace: kube.Namespace}, kube))
+				tc.breakKube(kube)
+				require.NoError(t, c.Update(t.Context(), kube))
+			}
+			require.NoError(t, r.applyProxy(t.Context(), inst))
+			assertProxyQuiesced(t, c)
+
+			if tc.remove {
+				return
+			}
+			require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: kube.Name, Namespace: kube.Namespace}, kube))
+			kube.Data[kubeconfigDataKey] = []byte(tokenKubeconfig)
+			require.NoError(t, c.Update(t.Context(), kube))
+			require.NoError(t, r.applyProxy(t.Context(), inst))
+
+			deploy := &appsv1.Deployment{}
+			require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: proxyName("oc"), Namespace: "ns"}, deploy))
+			require.NotNil(t, deploy.Spec.Replicas)
+			assert.Equal(t, int32(1), *deploy.Spec.Replicas)
+			assert.Equal(t, kubeconfigSecretName("oc"), kubeconfigVolumeSecret(t, deploy))
+			cm := &corev1.ConfigMap{}
+			require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: proxyName("oc"), Namespace: "ns"}, cm))
+			assert.NotEmpty(t, cm.Data[kubeconfigDataKey])
+		})
+	}
+}
+
+func assertProxyQuiesced(t *testing.T, c client.Client) {
+	t.Helper()
+	deploy := &appsv1.Deployment{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: proxyName("oc"), Namespace: "ns"}, deploy))
+	require.NotNil(t, deploy.Spec.Replicas)
+	assert.Equal(t, int32(0), *deploy.Spec.Replicas)
+	assert.NotContains(t, deploy.Spec.Template.Annotations, kubeconfigRVAnnotation)
+	for _, vol := range deploy.Spec.Template.Spec.Volumes {
+		assert.NotEqual(t, "kubeconfig", vol.Name)
+	}
+	cm := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: proxyName("oc"), Namespace: "ns"}, cm))
+	assert.Empty(t, cm.Data[kubeconfigDataKey])
+	assert.JSONEq(t, `{"routes":[]}`, cm.Data[proxyConfigDataKey])
 }
 
 func TestEmptyProxyCAIsNotRegenerated(t *testing.T) {
