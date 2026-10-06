@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-const kubeconfigSecretIndex = "spec.proxy.effectiveKubeconfig"
+const effectiveKubeconfigIndex = "spec.proxy.effectiveKubeconfig"
 
 func indexEffectiveKubeconfig(obj client.Object) []string {
 	inst, ok := obj.(*climcpv1alpha1.CliMcpInstance)
@@ -147,7 +147,7 @@ func (r *CliMcpInstanceReconciler) mapSecret(ctx context.Context, obj client.Obj
 		return reqs
 	}
 	var list climcpv1alpha1.CliMcpInstanceList
-	if err := r.List(ctx, &list, client.InNamespace(secret.Namespace), client.MatchingFields{kubeconfigSecretIndex: secret.Name}); err != nil {
+	if err := r.List(ctx, &list, client.InNamespace(secret.Namespace), client.MatchingFields{effectiveKubeconfigIndex: secret.Name}); err != nil {
 		return reqs
 	}
 	for i := range list.Items {

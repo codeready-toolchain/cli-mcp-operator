@@ -186,7 +186,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(string(hmac.Data[hmacSecretKey])).To(Equal(firstKey))
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -680,7 +680,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(svc.Annotations[openshiftServingCertAnnotation]).To(Equal(tlsSecretName("oc")))
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -718,7 +718,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -753,7 +753,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -865,7 +865,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		markPodReady(ctx, &unassigned[0])
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -881,7 +881,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -898,7 +898,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		markPodReady(ctx, &replaced[0])
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -922,7 +922,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		oldName := unassigned[0].Name
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -962,7 +962,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -985,7 +985,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		markPodReady(ctx, &unassigned[0])
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -1002,7 +1002,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(k8sClient.Update(ctx, inst)).To(Succeed())
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -1021,7 +1021,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -1045,7 +1045,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		oldName := unassigned[0].Name
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			inst := &climcpv1alpha1.CliMcpInstance{}
@@ -1180,7 +1180,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(cm.Data).NotTo(HaveKey(kubeconfigDataKey))
 
 		Eventually(func(g Gomega) {
-			markInstanceDeploymentsAvailable(ctx, ns.Name, "oc")
+			markInstanceDeploymentsAvailable(ctx, ns.Name)
 			_, recErr := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			g.Expect(recErr).NotTo(HaveOccurred())
 			got := &climcpv1alpha1.CliMcpInstance{}
@@ -1402,10 +1402,10 @@ func clientMCPAccess(ctx context.Context, authz kubernetes.Interface, namespace,
 	return sar.Status
 }
 
-func markInstanceDeploymentsAvailable(ctx context.Context, namespace, instance string) {
+func markInstanceDeploymentsAvailable(ctx context.Context, namespace string) {
 	GinkgoHelper()
-	markDeploymentAvailable(ctx, namespace, childName(instance))
-	markDeploymentAvailable(ctx, namespace, proxyName(instance))
+	markDeploymentAvailable(ctx, namespace, childName("oc"))
+	markDeploymentAvailable(ctx, namespace, proxyName("oc"))
 }
 
 func createProxyEndpoints(ctx context.Context, namespace, instance string) {

@@ -233,7 +233,7 @@ func TestCustomSecretNameEnqueues(t *testing.T) {
 		Domains: []string{"example.com"},
 	}}
 	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithIndex(&climcpv1alpha1.CliMcpInstance{}, kubeconfigSecretIndex, indexEffectiveKubeconfig).
+		WithIndex(&climcpv1alpha1.CliMcpInstance{}, effectiveKubeconfigIndex, indexEffectiveKubeconfig).
 		WithObjects(inst, allow).Build()
 	r := &CliMcpInstanceReconciler{Client: c}
 
@@ -748,7 +748,7 @@ func TestReconcilePoolLeavesPodsWhenProxyGateIsClosed(t *testing.T) {
 		stale.Annotations[sandboxOverlayAnnotation] = "old"
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(
 			[]client.Object{inst.DeepCopy(), stale.DeepCopy()},
-			poolGateObjects("ns", "oc")...,
+			poolGateObjects()...,
 		)...).Build()
 		r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
 
@@ -762,7 +762,7 @@ func TestReconcilePoolLeavesPodsWhenProxyGateIsClosed(t *testing.T) {
 		t.Parallel()
 		scheme := poolGateScheme(t)
 		inst := poolInstance()
-		objs := poolGateObjects("ns", "oc")
+		objs := poolGateObjects()
 		for _, obj := range objs {
 			np, ok := obj.(*networkingv1.NetworkPolicy)
 			if ok && np.Name == sandboxSAName("oc") {
@@ -813,7 +813,7 @@ func TestReconcilePoolErrorKeepsDesired(t *testing.T) {
 			Sandbox: climcpv1alpha1.SandboxSpec{WarmPoolSize: 2, Image: "img:test"},
 		},
 	}
-	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy()}, poolGateObjects("ns", "oc")...)...).Build()
+	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy()}, poolGateObjects()...)...).Build()
 	c := interceptor.NewClient(inner, interceptor.Funcs{
 		Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
 			return fmt.Errorf("create failed")
@@ -847,7 +847,7 @@ func TestReconcilePoolRelistsAfterPartialMutate(t *testing.T) {
 	p2 := readyPoolPod("mid", now.Add(-time.Minute), hash)
 	p3 := readyPoolPod("new", now, hash)
 
-	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), &p1, &p2, &p3}, poolGateObjects("ns", "oc")...)...).Build()
+	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), &p1, &p2, &p3}, poolGateObjects()...)...).Build()
 	deletes := 0
 	c := interceptor.NewClient(inner, interceptor.Funcs{
 		Delete: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
@@ -888,7 +888,7 @@ func TestReconcilePoolTerminatingOccupiesSlot(t *testing.T) {
 	terminating.DeletionTimestamp = &ts
 	terminating.Finalizers = []string{"cli-mcp.redhat.com/test"}
 
-	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), terminating.DeepCopy()}, poolGateObjects("ns", "oc")...)...).Build()
+	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), terminating.DeepCopy()}, poolGateObjects()...)...).Build()
 	c := interceptor.NewClient(inner, interceptor.Funcs{
 		Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
 			t.Fatal("must not create a replacement while a terminating unassigned pod occupies a slot")
@@ -919,7 +919,7 @@ func TestReconcilePoolStaleDeleteDoesNotCreateWhileTerminating(t *testing.T) {
 	stale := sandboxPod("stale", "", time.Now(), time.Now())
 	stale.Annotations[sandboxOverlayAnnotation] = "not-the-current-hash"
 
-	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), stale.DeepCopy()}, poolGateObjects("ns", "oc")...)...).Build()
+	inner := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), stale.DeepCopy()}, poolGateObjects()...)...).Build()
 	c := interceptor.NewClient(inner, interceptor.Funcs{
 		Delete: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
 			return nil
@@ -956,7 +956,7 @@ func TestReconcilePoolReplacesStaleWhenDeleteSucceeds(t *testing.T) {
 	stale := sandboxPod("stale", "", time.Now(), time.Now())
 	stale.Annotations[sandboxOverlayAnnotation] = "not-the-current-hash"
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), stale.DeepCopy()}, poolGateObjects("ns", "oc")...)...).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), stale.DeepCopy()}, poolGateObjects()...)...).Build()
 	r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
 	snap, recErr := r.reconcilePool(t.Context(), inst, true)
 	require.NoError(t, recErr)
@@ -985,7 +985,7 @@ func TestReconcilePoolAssignedDoesNotOccupySlot(t *testing.T) {
 		},
 	}
 	assigned := sandboxPod("kept-session", "sess", time.Now(), time.Now())
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), assigned.DeepCopy()}, poolGateObjects("ns", "oc")...)...).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append([]client.Object{inst.DeepCopy(), assigned.DeepCopy()}, poolGateObjects()...)...).Build()
 	r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
 	snap, recErr := r.reconcilePool(t.Context(), inst, true)
 	require.NoError(t, recErr)
@@ -1025,23 +1025,23 @@ func sandboxPod(name, sessionID string, created, activity time.Time) corev1.Pod 
 	}
 }
 
-func poolGateObjects(namespace, instance string) []client.Object {
+func poolGateObjects() []client.Object {
 	ready := true
 	return []client.Object{
 		&corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{Name: proxyName(instance), Namespace: namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: "ns"},
 			Data:       map[string]string{proxyConfigDataKey: `{"routes":[]}`},
 		},
 		&networkingv1.NetworkPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: sandboxSAName(instance), Namespace: namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: sandboxSAName("oc"), Namespace: "ns"},
 			Spec: networkingv1.NetworkPolicySpec{
 				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
 			},
 		},
 		&networkingv1.NetworkPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: proxyName(instance), Namespace: namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: "ns"},
 		},
-		proxyEndpointSlice(namespace, proxyName(instance), proxyName(instance), "10.0.0.8", &ready),
+		proxyEndpointSlice("ns", proxyName("oc"), proxyName("oc"), "10.0.0.8", &ready),
 	}
 }
 

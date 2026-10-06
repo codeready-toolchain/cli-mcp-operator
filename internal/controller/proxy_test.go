@@ -96,7 +96,7 @@ func TestProxyPoolOpenUsesServiceLabel(t *testing.T) {
 	inst := testInstance("oc", "ns")
 	notReady := false
 	ready := true
-	objs := append(poolGateObjects("ns", "oc"),
+	objs := append(poolGateObjects(),
 		proxyEndpointSlice("ns", "other-svc-slice", "other-svc", "10.1.1.1", &ready),
 	)
 	for _, obj := range objs {

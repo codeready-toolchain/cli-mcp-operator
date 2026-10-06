@@ -491,7 +491,7 @@ func deploymentAvailable(d *appsv1.Deployment) bool {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *CliMcpInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &climcpv1alpha1.CliMcpInstance{}, kubeconfigSecretIndex, indexEffectiveKubeconfig); err != nil {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &climcpv1alpha1.CliMcpInstance{}, effectiveKubeconfigIndex, indexEffectiveKubeconfig); err != nil {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
