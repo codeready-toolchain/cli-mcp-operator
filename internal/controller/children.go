@@ -116,10 +116,9 @@ func mcpRoleRules(instance string) []rbacv1.PolicyRule {
 			Verbs:     []string{"create", "delete"},
 		},
 		{
-			APIGroups:     []string{""},
-			Resources:     []string{"endpoints"},
-			ResourceNames: []string{proxyName(instance)},
-			Verbs:         []string{"get"},
+			APIGroups: []string{"discovery.k8s.io"},
+			Resources: []string{"endpointslices"},
+			Verbs:     []string{"list"},
 		},
 		{
 			APIGroups:     []string{"networking.k8s.io"},

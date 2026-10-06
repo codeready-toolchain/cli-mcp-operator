@@ -56,11 +56,11 @@ rules:
   - update
   - watch
 - apiGroups:
-  - ""
+  - discovery.k8s.io
   resources:
-  - endpoints
+  - endpointslices
   verbs:
-  - get
+  - list
 - apiGroups:
   - networking.k8s.io
   resources:

@@ -27,6 +27,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1192,7 +1193,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 
 	It("does not create pool pods before proxy endpoints are ready", func() {
 		createAdminSecrets(ctx, ns.Name)
-		Expect(k8sClient.Delete(ctx, &corev1.Endpoints{
+		Expect(k8sClient.Delete(ctx, &discoveryv1.EndpointSlice{
 			ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: ns.Name},
 		})).To(Succeed())
 		createInstanceWithPool(ctx, nn, 1)
@@ -1246,6 +1247,7 @@ func testImages() Images {
 	}
 }
 
+//nolint:gosec // G101: test kubeconfig token, not a live credential
 const tokenKubeconfig = `apiVersion: v1
 kind: Config
 current-context: c1
@@ -1408,12 +1410,8 @@ func markInstanceDeploymentsAvailable(ctx context.Context, namespace, instance s
 
 func createProxyEndpoints(ctx context.Context, namespace, instance string) {
 	GinkgoHelper()
-	ep := &corev1.Endpoints{
-		ObjectMeta: metav1.ObjectMeta{Name: proxyName(instance), Namespace: namespace},
-		Subsets: []corev1.EndpointSubset{{
-			Addresses: []corev1.EndpointAddress{{IP: "10.0.0.8"}},
-		}},
-	}
+	ready := true
+	ep := proxyEndpointSlice(namespace, proxyName(instance), proxyName(instance), "10.0.0.8", &ready)
 	err := k8sClient.Create(ctx, ep)
 	if apierrors.IsAlreadyExists(err) {
 		return

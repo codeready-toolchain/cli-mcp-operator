@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -88,19 +89,36 @@ func TestSandboxEgressDNSPeers(t *testing.T) {
 	assert.Equal(t, 2, dns53)
 }
 
-func TestEndpointsIgnoreNotReady(t *testing.T) {
+func TestProxyPoolOpenUsesServiceLabel(t *testing.T) {
 	t.Parallel()
-	assert.False(t, endpointsHaveAddresses(&corev1.Endpoints{}))
-	assert.False(t, endpointsHaveAddresses(&corev1.Endpoints{
-		Subsets: []corev1.EndpointSubset{{
-			NotReadyAddresses: []corev1.EndpointAddress{{IP: "10.0.0.1"}},
-		}},
-	}))
-	assert.True(t, endpointsHaveAddresses(&corev1.Endpoints{
-		Subsets: []corev1.EndpointSubset{{
-			Addresses: []corev1.EndpointAddress{{IP: "10.0.0.1"}},
-		}},
-	}))
+	scheme := proxyApplyScheme(t)
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
+	inst := testInstance("oc", "ns")
+	notReady := false
+	ready := true
+	objs := append(poolGateObjects("ns", "oc"),
+		proxyEndpointSlice("ns", "other-svc-slice", "other-svc", "10.1.1.1", &ready),
+	)
+	for _, obj := range objs {
+		slice, ok := obj.(*discoveryv1.EndpointSlice)
+		if ok && slice.Labels[discoveryv1.LabelServiceName] == proxyName("oc") {
+			slice.Endpoints[0].Conditions.Ready = &notReady
+		}
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(objs, inst.DeepCopy())...).Build()
+	r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme}
+
+	open, err := r.proxyPoolOpen(t.Context(), inst)
+	require.NoError(t, err)
+	assert.False(t, open)
+
+	own := &discoveryv1.EndpointSlice{}
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: proxyName("oc"), Namespace: "ns"}, own))
+	own.Endpoints[0].Conditions.Ready = &ready
+	require.NoError(t, c.Update(t.Context(), own))
+	open, err = r.proxyPoolOpen(t.Context(), inst)
+	require.NoError(t, err)
+	assert.True(t, open)
 }
 
 func TestApplyProxyMountsNamedSecretAndIgnoresTokenRotation(t *testing.T) {

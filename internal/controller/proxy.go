@@ -36,6 +36,7 @@ import (
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -43,6 +44,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -282,8 +284,9 @@ func (r *CliMcpInstanceReconciler) kubernetesRoutes(ctx context.Context, inst *c
 		return nil, nil, nil, nil
 	}
 	data := secret.Data[kubeconfigDataKey]
-	if _, err := kubeconfig.Validate(data); err != nil {
-		return nil, nil, nil, nil
+	if _, validateErr := kubeconfig.Validate(data); validateErr != nil {
+		// Invalid kubeconfig is a status condition. Skip routes until it parses.
+		return nil, nil, nil, nil //nolint:nilerr // readyGate reports KubeconfigInvalid
 	}
 	dummy, err := kubeconfig.Sanitize(data, ca.Data[caCertKey])
 	if err != nil {
@@ -660,24 +663,15 @@ func (r *CliMcpInstanceReconciler) proxyPoolOpen(ctx context.Context, inst *clim
 	if err != nil {
 		return false, fmt.Errorf("get proxy network policy: %w", err)
 	}
-	ep := &corev1.Endpoints{}
-	err = r.Get(ctx, types.NamespacedName{Namespace: inst.Namespace, Name: proxyName(inst.Name)}, ep)
-	if apierrors.IsNotFound(err) {
-		return false, nil
-	}
+	var sliceList discoveryv1.EndpointSliceList
+	err = r.List(ctx, &sliceList,
+		client.InNamespace(inst.Namespace),
+		client.MatchingLabels{discoveryv1.LabelServiceName: proxyName(inst.Name)},
+	)
 	if err != nil {
-		return false, fmt.Errorf("get proxy endpoints: %w", err)
+		return false, fmt.Errorf("list proxy endpoint slices: %w", err)
 	}
-	return endpointsHaveAddresses(ep), nil
-}
-
-func endpointsHaveAddresses(ep *corev1.Endpoints) bool {
-	for _, subset := range ep.Subsets {
-		if len(subset.Addresses) > 0 {
-			return true
-		}
-	}
-	return false
+	return session.EndpointSlicesReady(sliceList.Items), nil
 }
 
 func secretKeyNonEmptyCM(cm *corev1.ConfigMap, key string) bool {

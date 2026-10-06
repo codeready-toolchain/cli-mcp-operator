@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -304,7 +305,7 @@ func TestManagerRoleIsCRDOnly(t *testing.T) {
 	role := loadRoleYAML(t, filepath.Join("..", "..", "config", "rbac", "role.yaml"))
 	forbidden := []string{
 		"pods", "secrets", "services", "serviceaccounts",
-		"deployments", "roles", "rolebindings", "networkpolicies", "configmaps", "endpoints",
+		"deployments", "roles", "rolebindings", "networkpolicies", "configmaps", "endpoints", "endpointslices",
 	}
 	var crbVerbs, clusterRoleVerbs []string
 	var crbNames, clusterRoleNames []string
@@ -370,13 +371,14 @@ func TestNamespacedRoleHasChildResources(t *testing.T) {
 	}
 	for _, want := range []string{
 		"pods", "secrets", "services", "serviceaccounts", "configmaps",
-		"deployments", "roles", "rolebindings", "networkpolicies", "endpoints",
+		"deployments", "roles", "rolebindings", "networkpolicies", "endpointslices",
 	} {
 		assert.Contains(t, resources, want)
 	}
 	for _, rule := range role.Rules {
-		if slices.Contains(rule.Resources, "endpoints") {
-			assert.Equal(t, []string{"get"}, rule.Verbs)
+		if slices.Contains(rule.Resources, "endpointslices") {
+			assert.Equal(t, []string{"discovery.k8s.io"}, rule.APIGroups)
+			assert.Equal(t, []string{"list"}, rule.Verbs)
 			assert.Empty(t, rule.ResourceNames)
 		}
 	}
@@ -396,19 +398,20 @@ func TestMCPRoleSecretVerbs(t *testing.T) {
 	assert.NotContains(t, secretRule.Verbs, "get")
 	assert.NotContains(t, secretRule.Verbs, "list")
 	assert.NotContains(t, secretRule.Verbs, "watch")
-	var endpoints, policies *rbacv1.PolicyRule
+	var endpointSlices, policies *rbacv1.PolicyRule
 	for i := range mcpRoleRules("oc") {
 		rule := mcpRoleRules("oc")[i]
-		if len(rule.Resources) == 1 && rule.Resources[0] == "endpoints" {
-			endpoints = &rule
+		if len(rule.Resources) == 1 && rule.Resources[0] == "endpointslices" {
+			endpointSlices = &rule
 		}
 		if len(rule.Resources) == 1 && rule.Resources[0] == "networkpolicies" {
 			policies = &rule
 		}
 	}
-	require.NotNil(t, endpoints)
-	assert.Equal(t, []string{"get"}, endpoints.Verbs)
-	assert.Equal(t, []string{proxyName("oc")}, endpoints.ResourceNames)
+	require.NotNil(t, endpointSlices)
+	assert.Equal(t, []string{"discovery.k8s.io"}, endpointSlices.APIGroups)
+	assert.Equal(t, []string{"list"}, endpointSlices.Verbs)
+	assert.Empty(t, endpointSlices.ResourceNames)
 	require.NotNil(t, policies)
 	assert.Equal(t, []string{"get"}, policies.Verbs)
 	assert.Equal(t, []string{sandboxSAName("oc")}, policies.ResourceNames)
@@ -782,6 +785,7 @@ func poolGateScheme(t *testing.T) *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
 	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
 	return scheme
 }
@@ -800,6 +804,7 @@ func TestReconcilePoolErrorKeepsDesired(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
 	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
 
 	inst := &climcpv1alpha1.CliMcpInstance{
@@ -825,6 +830,7 @@ func TestReconcilePoolRelistsAfterPartialMutate(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
 	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
 
 	inst := &climcpv1alpha1.CliMcpInstance{
@@ -864,6 +870,7 @@ func TestReconcilePoolTerminatingOccupiesSlot(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
 	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
 
 	inst := &climcpv1alpha1.CliMcpInstance{
@@ -900,6 +907,7 @@ func TestReconcilePoolStaleDeleteDoesNotCreateWhileTerminating(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
 	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
 
 	inst := &climcpv1alpha1.CliMcpInstance{
@@ -933,6 +941,7 @@ func TestReconcilePoolReplacesStaleWhenDeleteSucceeds(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
 	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
 
 	inst := &climcpv1alpha1.CliMcpInstance{
@@ -966,6 +975,7 @@ func TestReconcilePoolAssignedDoesNotOccupySlot(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
+	require.NoError(t, discoveryv1.AddToScheme(scheme))
 	require.NoError(t, climcpv1alpha1.AddToScheme(scheme))
 
 	inst := &climcpv1alpha1.CliMcpInstance{
@@ -1016,6 +1026,7 @@ func sandboxPod(name, sessionID string, created, activity time.Time) corev1.Pod 
 }
 
 func poolGateObjects(namespace, instance string) []client.Object {
+	ready := true
 	return []client.Object{
 		&corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: proxyName(instance), Namespace: namespace},
@@ -1030,12 +1041,23 @@ func poolGateObjects(namespace, instance string) []client.Object {
 		&networkingv1.NetworkPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: proxyName(instance), Namespace: namespace},
 		},
-		&corev1.Endpoints{
-			ObjectMeta: metav1.ObjectMeta{Name: proxyName(instance), Namespace: namespace},
-			Subsets: []corev1.EndpointSubset{{
-				Addresses: []corev1.EndpointAddress{{IP: "10.0.0.8"}},
-			}},
+		proxyEndpointSlice(namespace, proxyName(instance), proxyName(instance), "10.0.0.8", &ready),
+	}
+}
+
+func proxyEndpointSlice(namespace, name, service, ip string, ready *bool) *discoveryv1.EndpointSlice {
+	ep := discoveryv1.Endpoint{Conditions: discoveryv1.EndpointConditions{Ready: ready}}
+	if ip != "" {
+		ep.Addresses = []string{ip}
+	}
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{discoveryv1.LabelServiceName: service},
 		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints:   []discoveryv1.Endpoint{ep},
 	}
 }
 
