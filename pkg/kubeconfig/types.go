@@ -20,5 +20,6 @@ type ProxyRoute struct {
 	Domain         string   `json:"domain"`
 	Injector       Injector `json:"injector"`
 	KubeconfigPath string   `json:"kubeconfigPath,omitempty"`
-	CACert         string   `json:"caCert,omitempty"`
+	// CACert is the base64 PEM of the cluster CA. Empty means the public trust store.
+	CACert string `json:"caCert,omitempty"`
 }

@@ -101,6 +101,45 @@ func TestValidateTwoServers(t *testing.T) {
 	assert.Equal(t, "api.other.example:443", routes[1].Domain)
 }
 
+func TestBuildProxyRoutesMixedCA(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.Clusters["public"] = &clientcmdapi.Cluster{
+		Server: "https://api.public.example:6443",
+	}
+	cfg.AuthInfos["u2"] = &clientcmdapi.AuthInfo{Token: "token-2"}
+	cfg.Contexts["public"] = &clientcmdapi.Context{Cluster: "public", AuthInfo: "u2"}
+
+	routes, err := BuildProxyRoutes(mustWrite(t, cfg), "/kube/config")
+	require.NoError(t, err)
+	require.Len(t, routes, 2)
+
+	assert.Equal(t, "api.example.com:6443", routes[0].Domain)
+	decoded, err := base64.StdEncoding.DecodeString(routes[0].CACert)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("ca-1"), decoded)
+
+	assert.Equal(t, "api.public.example:6443", routes[1].Domain)
+	assert.Empty(t, routes[1].CACert)
+	assert.Equal(t, InjectorKubernetes, routes[1].Injector)
+}
+
+func TestValidateSameServerOmitsCA(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.Clusters["c1"].CertificateAuthorityData = nil
+	cfg.Clusters["c2"] = &clientcmdapi.Cluster{Server: "https://api.example.com:6443"}
+	cfg.Contexts["c2"] = &clientcmdapi.Context{Cluster: "c2", AuthInfo: "u1", Namespace: "other"}
+
+	routes, err := BuildProxyRoutes(mustWrite(t, cfg), "/kube/config")
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+	assert.Equal(t, "api.example.com:6443", routes[0].Domain)
+	assert.Empty(t, routes[0].CACert)
+}
+
 func TestBuildProxyRoutesNotOnlyCurrentContext(t *testing.T) {
 	t.Parallel()
 
@@ -234,11 +273,14 @@ func TestValidateRejects(t *testing.T) {
 			wantErr: "insecure-skip-tls-verify",
 		},
 		{
-			name: "empty ca",
+			name: "ca present and absent",
 			mutate: func(cfg *clientcmdapi.Config) {
-				cfg.Clusters["c1"].CertificateAuthorityData = nil
+				cfg.Clusters["c2"] = &clientcmdapi.Cluster{
+					Server: "https://api.example.com:6443",
+				}
+				cfg.Contexts["c2"] = &clientcmdapi.Context{Cluster: "c2", AuthInfo: "u1"}
 			},
-			wantErr: "certificate-authority-data",
+			wantErr: "conflicting certificate authorities",
 		},
 		{
 			name: "conflicting tokens",
@@ -322,6 +364,40 @@ func TestValidateRejects(t *testing.T) {
 			assert.NotContains(t, err.Error(), "token-2")
 		})
 	}
+}
+
+func TestValidateAllowsOmittedCA(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.Clusters["c1"].CertificateAuthorityData = nil
+	data := mustWrite(t, cfg)
+
+	_, err := Validate(data)
+	require.NoError(t, err)
+
+	routes, err := BuildProxyRoutes(data, "/etc/kube/config")
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+	assert.Empty(t, routes[0].CACert)
+	assert.Equal(t, "api.example.com:6443", routes[0].Domain)
+	assert.Equal(t, InjectorKubernetes, routes[0].Injector)
+}
+
+func TestSanitizeOmittedCAUsesProxyCA(t *testing.T) {
+	t.Parallel()
+
+	cfg := baseConfig()
+	cfg.Clusters["c1"].CertificateAuthorityData = nil
+	proxyCA := []byte("proxy-ca-pem-sentinel")
+
+	out, err := Sanitize(mustWrite(t, cfg), proxyCA)
+	require.NoError(t, err)
+
+	loaded, err := clientcmd.Load(out)
+	require.NoError(t, err)
+	assert.Equal(t, proxyCA, loaded.Clusters["c1"].CertificateAuthorityData)
+	assert.Equal(t, DummyToken, loaded.AuthInfos["u1"].Token)
 }
 
 func TestSanitizeSwapsTokenAndCA(t *testing.T) {

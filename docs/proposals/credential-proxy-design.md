@@ -184,7 +184,7 @@ On `CONNECT` and on each MITM’d request:
 | MITM | **All** v1 routes MITM (kubernetes inject **and** allowlist `none`). Do **not** copy claw’s `none` without `AllowedPaths` → direct CONNECT tunnel (that would skip strip). Leaf certs signed by the proxy CA. Dummy kubeconfig (kubernetes targets) uses that CA. `curl` trusts it via `SSL_CERT_FILE`, which replaces the process default bundle on purpose: sandbox TLS only goes through this MITM, so the file is the proxy CA only. The readiness probe is plain HTTP `curl http://127.0.0.1:8090/health` (`NO_PROXY` includes loopback), so it never needs a CA and is not a reason to append the system bundle. |
 | Strip | Before inject: `Authorization`, `X-Api-Key`, `Proxy-Authorization`, `Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`, and any `Impersonate-Extra-*`. Allowlist injects nothing after strip. Do not copy claw’s `X-Goog-Api-Key` / GCP token-vending short-circuit. |
 | Inject | `kubernetes` injector maps `host:port` → token from the **real** kubeconfig, then deny path suffixes `…/exec` `…/attach` `…/portforward` `…/proxy` on the URL **path** (canonicalize with `path.Clean`; ignore query). Tests keep `logs` / `watch` / `explain` allowed ([Q9](credential-proxy-questions.md)). `allowlist` uses injector `none` (no path denylist). |
-| Upstream TLS | Kubernetes routes: proxy verifies the real API server using each cluster’s original CA (`caCert` on the route). Allowlist routes: system/public CA pool. Never goproxy’s default `InsecureSkipVerify`. |
+| Upstream TLS | Kubernetes routes: when the kubeconfig has `certificate-authority-data`, the proxy trusts only that CA for that host (`caCert` on the route, public roots not added). When it is omitted, the proxy uses the system/public CA pool and still checks the API hostname. Allowlist routes: system/public CA pool. Never goproxy’s default `InsecureSkipVerify`. |
 
 `oc --token <stolen>`, `oc --kubeconfig /workspace/leaked`, and `curl -H 'Authorization: Bearer …'` that still go through `HTTPS_PROXY` therefore authenticate as the investigation SA.
 
@@ -215,12 +215,12 @@ Sandbox NP name stays `cli-mcp-<name>-sandbox` (add Egress). Proxy NP name is `c
 
 Same idea as claw `parseAndValidateKubeconfig` + `sanitizeKubeconfig` (implement here; do not import claw):
 
-- Parse: token-only. Reject client certs, exec, auth-provider, basic auth, `tokenFile`, `certificate-authority` *file* paths (inline `certificate-authority-data` only).
+- Parse: token-only. Reject client certs, exec, auth-provider, basic auth, `tokenFile`, `certificate-authority` *file* paths, and `insecure-skip-tls-verify`. Inline `certificate-authority-data` is optional. The same server cannot mix a CA with a different CA, or a CA with no CA.
 - One token per server `host:port`. Contexts that share a server may differ by namespace. Different tokens for that same server → `KubeconfigInvalid` (do not last-write-wins, do not pick `current-context`). Different servers keep different tokens.
 - Preserve clusters (real `server` URLs), contexts, namespaces.
 - Replace every user token with `proxy-managed-token`. Clear `tokenFile`.
 - Set each cluster’s `certificate-authority-data` to the **proxy CA** (not the real API CA). Clear `insecure-skip-tls-verify`.
-- Real API CAs go on the proxy **route** `caCert` so the proxy can verify upstream.
+- Real API CAs, when present, go on the proxy **route** `caCert` so the proxy trusts only that CA upstream. An omitted cluster CA leaves `caCert` unset and the proxy uses the public trust store for that host.
 
 Delivery: ConfigMap (no real credentials), mounted read-only at `/config` with `KUBECONFIG=/config/kubeconfig` **when a kubernetes target exists**. The real kubeconfig Secret is mounted **only** on the proxy. Do not delete the admin Secret; do not `ownerRef` it. Allowlist-only CRs skip the dummy mount; they still get `HTTPS_PROXY` and the proxy CA (`SSL_CERT_FILE`).
 
@@ -318,7 +318,7 @@ Route list JSON. Kubernetes target: one route per kubeconfig cluster `server` (a
       "domain": "api.host.example.com:6443",
       "injector": "kubernetes",
       "kubeconfigPath": "/etc/kube/config",
-      "caCert": "<base64 PEM of real API CA>"
+      "caCert": "<base64 PEM of real API CA, omit when the API is in the public trust store>"
     }
   ]
 }

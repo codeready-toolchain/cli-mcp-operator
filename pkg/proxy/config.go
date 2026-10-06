@@ -101,7 +101,7 @@ func prepareRoute(route kubeconfig.ProxyRoute) (kubeconfig.ProxyRoute, error) {
 
 func validateCACert(encoded string) error {
 	if encoded == "" {
-		return fmt.Errorf("caCert is required")
+		return nil
 	}
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {

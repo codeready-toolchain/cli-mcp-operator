@@ -58,7 +58,6 @@ func TestParseConfigRejects(t *testing.T) {
 		{name: "allowed paths", body: `{"routes":[{"domain":"api.example.com:443","injector":"none","allowedPaths":["/"]}]}`, wantErr: "unknown field"},
 		{name: "duplicate", body: noneJSON("API.example.com:443", "api.example.com:0443"), wantErr: "duplicate"},
 		{name: "no routes", body: `{"routes":[]}`, wantErr: "no routes"},
-		{name: "missing ca", body: `{"routes":[{"domain":"api.example.com:6443","injector":"kubernetes","kubeconfigPath":"/kube/config"}]}`, wantErr: "caCert"},
 		{name: "bad ca", body: `{"routes":[{"domain":"api.example.com:6443","injector":"kubernetes","kubeconfigPath":"/kube/config","caCert":"` + base64.StdEncoding.EncodeToString([]byte("nope")) + `"}]}`, wantErr: "PEM"},
 		{name: "missing kubeconfig", body: `{"routes":[{"domain":"api.example.com:6443","injector":"kubernetes","caCert":"` + ca + `"}]}`, wantErr: "kubeconfigPath"},
 		{name: "bad ca encoding", body: `{"routes":[{"domain":"api.example.com:6443","injector":"kubernetes","kubeconfigPath":"/kube/config","caCert":"****"}]}`, wantErr: "decode caCert"},
@@ -90,6 +89,18 @@ func TestLoadConfig(t *testing.T) {
 	_, err = LoadConfig(filepath.Join(dir, "missing.json"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read config")
+}
+
+func TestParseConfigKubernetesOmitsCA(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ParseConfig([]byte(`{"routes":[{"domain":"api.example.com:6443","injector":"kubernetes","kubeconfigPath":"/etc/kube/config"}]}`))
+	require.NoError(t, err)
+	route, ok := cfg.Match("api.example.com:6443")
+	require.True(t, ok)
+	assert.Equal(t, kubeconfig.InjectorKubernetes, route.Injector)
+	assert.Empty(t, route.CACert)
+	assert.Equal(t, "/etc/kube/config", route.KubeconfigPath)
 }
 
 func TestParseConfigKubernetesCA(t *testing.T) {

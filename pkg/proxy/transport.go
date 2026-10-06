@@ -57,30 +57,43 @@ func newHostTransport(routes map[string]kubeconfig.ProxyRoute) (*hostTransport, 
 func certPool(route kubeconfig.ProxyRoute, system **x509.CertPool) (*x509.CertPool, error) {
 	switch route.Injector {
 	case kubeconfig.InjectorKubernetes:
-		raw, err := base64.StdEncoding.DecodeString(route.CACert)
-		if err != nil {
-			return nil, fmt.Errorf("decode caCert: %w", err)
+		if route.CACert != "" {
+			return pinnedCAPool(route.CACert)
 		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(raw) {
-			return nil, fmt.Errorf("caCert is not a PEM certificate")
-		}
-		return pool, nil
+		return systemPool(system)
 	case kubeconfig.InjectorNone:
-		if *system == nil {
-			pool, err := x509.SystemCertPool()
-			if err != nil {
-				return nil, fmt.Errorf("load system cert pool: %w", err)
-			}
-			if pool == nil {
-				return nil, fmt.Errorf("system cert pool is empty")
-			}
-			*system = pool
-		}
-		return *system, nil
+		return systemPool(system)
 	default:
 		return nil, fmt.Errorf("unknown injector %q", route.Injector)
 	}
+}
+
+// pinnedCAPool trusts only the cluster CA from the route. Public roots are
+// not added, so a private API stays pinned to the CA the admin supplied.
+func pinnedCAPool(encoded string) (*x509.CertPool, error) {
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode caCert: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(raw) {
+		return nil, fmt.Errorf("caCert is not a PEM certificate")
+	}
+	return pool, nil
+}
+
+func systemPool(system **x509.CertPool) (*x509.CertPool, error) {
+	if *system == nil {
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, fmt.Errorf("load system cert pool: %w", err)
+		}
+		if pool == nil {
+			return nil, fmt.Errorf("system cert pool is empty")
+		}
+		*system = pool
+	}
+	return *system, nil
 }
 
 func (h *hostTransport) dialTLS(ctx context.Context, network, addr string) (net.Conn, error) {

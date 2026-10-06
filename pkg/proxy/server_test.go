@@ -237,6 +237,27 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 		}
 		assert.Len(t, seen.snapshot(), 1)
 	})
+
+	t.Run("omitted CA sends nothing", func(t *testing.T) {
+		omitted := kubeConfig(t, host, nil)
+		omitProxyCA, omitProxyKey, omitProxyCert, _ := generateCA(t, elliptic.P256())
+		omitSrv := startProxy(t, mustProxyRoutes(t, omitted, writeKubeconfig(t, omitted)), &caFiles{cert: omitProxyCA, key: omitProxyKey})
+
+		raw := connectOK(t, omitSrv.Listener.Addr().String(), host)
+		clientTLS := tlsClient(t, raw, omitProxyCert, "127.0.0.1")
+		require.NoError(t, clientTLS.HandshakeContext(t.Context()))
+
+		stolen, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+host+"/api/v1/namespaces/ns/pods", nil)
+		require.NoError(t, err)
+		stolen.Header.Set("Authorization", "Bearer stolen")
+		require.NoError(t, stolen.Write(clientTLS))
+		resp, err := http.ReadResponse(bufio.NewReader(clientTLS), stolen)
+		if err == nil {
+			t.Cleanup(func() { _ = resp.Body.Close() })
+			assert.NotEqual(t, http.StatusAccepted, resp.StatusCode)
+		}
+		assert.Len(t, seen.snapshot(), 1)
+	})
 }
 
 func TestNewServerRejectsCA(t *testing.T) {

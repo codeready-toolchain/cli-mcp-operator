@@ -13,8 +13,11 @@ type serverIdentity struct {
 }
 
 // Validate parses kubeconfig bytes and requires token-only auth.
-// Each server host:port has one token and one CA. Contexts that share a
-// server may differ by namespace. Every cluster must be referenced by a context.
+// Each server host:port has one token. certificate-authority-data is optional.
+// When set, every cluster that shares that server must carry the same CA.
+// An omitted CA and a present CA for the same server conflict. Contexts that
+// share a server may differ by namespace. Every cluster must be referenced
+// by a context.
 func Validate(data []byte) (*clientcmdapi.Config, error) {
 	cfg, err := clientcmd.Load(data)
 	if err != nil {
@@ -120,9 +123,6 @@ func validateCluster(name string, cluster *clientcmdapi.Cluster) error {
 	}
 	if cluster.InsecureSkipTLSVerify {
 		return fmt.Errorf("cluster %q sets insecure-skip-tls-verify", name)
-	}
-	if len(cluster.CertificateAuthorityData) == 0 {
-		return fmt.Errorf("cluster %q has no certificate-authority-data", name)
 	}
 	return nil
 }

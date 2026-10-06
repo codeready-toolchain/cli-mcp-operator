@@ -10,7 +10,8 @@ import (
 )
 
 // BuildProxyRoutes emits one kubernetes route per distinct cluster server.
-// caCert is the base64 encoding of the original cluster CA.
+// caCert is set only when the cluster has certificate-authority-data.
+// An omitted CA means the proxy uses the public trust store for that host.
 func BuildProxyRoutes(data []byte, kubeconfigPath string) ([]ProxyRoute, error) {
 	if kubeconfigPath == "" {
 		return nil, fmt.Errorf("kubeconfig path is empty")
@@ -46,12 +47,15 @@ func routesFromClusters(cfg *clientcmdapi.Config, kubeconfigPath string) ([]Prox
 			continue
 		}
 		seen[host] = struct{}{}
-		routes = append(routes, ProxyRoute{
+		route := ProxyRoute{
 			Domain:         host,
 			Injector:       InjectorKubernetes,
 			KubeconfigPath: kubeconfigPath,
-			CACert:         base64.StdEncoding.EncodeToString(cluster.CertificateAuthorityData),
-		})
+		}
+		if len(cluster.CertificateAuthorityData) > 0 {
+			route.CACert = base64.StdEncoding.EncodeToString(cluster.CertificateAuthorityData)
+		}
+		routes = append(routes, route)
 	}
 	return routes, nil
 }

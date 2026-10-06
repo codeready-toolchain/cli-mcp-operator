@@ -14,6 +14,8 @@ RUN CGO_ENABLED=0 go build \
     -o bin/cli-mcp-proxy ./cmd/proxy/
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+# Public-trust kubernetes routes verify API certificates with this bundle.
+RUN microdnf install -y ca-certificates && microdnf clean all
 COPY --from=go-builder /workspace/bin/cli-mcp-proxy /usr/bin/
 USER 1001
 ENTRYPOINT ["/usr/bin/cli-mcp-proxy"]
