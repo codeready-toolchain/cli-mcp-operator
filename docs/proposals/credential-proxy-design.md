@@ -437,7 +437,7 @@ Depends on PR 1. **Breaks** in-cluster sandbox `oc` without the proxy. Leaves `/
 - **Done when:** a CR with a valid token-only kubeconfig gets dummy + proxy + egress lock, goes Ready, and sandbox pods do not mount the admin Secret. An allowlist-only CR goes Ready with no kubeconfig Secret and no dummy mount.
 - **Out of this PR:** first-party GitOps investigation ClusterRole; production MCP client wiring; Kind isolation of `unset HTTPS_PROXY` if the sandbox image + real API are too heavy (then PR 3).
 
-### PR 3 — Kind isolation e2e
+### PR 3 — Kind isolation e2e — **done**
 
 Depends on PR 2. Load proxy image. Assert: sandbox cannot reach API IPs with `unset HTTPS_PROXY` / `oc --server`; `oc --token` / `curl -H Authorization` through the proxy still only has investigation RBAC; a throwaway pod in the namespace cannot CONNECT to the proxy Service; a second instance’s sandbox cannot use the first proxy; `curl http://<external-ip>:53` from the sandbox is denied.
 

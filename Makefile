@@ -150,6 +150,7 @@ setup-test-e2e: kind ## Set up a Kind cluster with Calico so NetworkPolicy is en
 				kubectl get pods -n kube-system >&2 || true; \
 				return 1; \
 			fi; \
+			sleep 5; \
 		done; \
 	}; \
 	wait_ready k8s-app=calico-node; \
