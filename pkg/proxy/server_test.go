@@ -141,7 +141,7 @@ func TestNoneMITMUsesProxyCA(t *testing.T) {
 	srv := startProxy(t, mustParse(t, noneRoutes(t, host)), &caFiles{cert: proxyCA, key: proxyKey})
 
 	conn := connectOK(t, srv.Listener.Addr().String(), host)
-	tlsConn := tlsClient(t, conn, proxyCert, "127.0.0.1")
+	tlsConn := tlsClient(t, conn, proxyCert)
 	require.NoError(t, tlsConn.HandshakeContext(t.Context()))
 	state := tlsConn.ConnectionState()
 	require.NotEmpty(t, state.PeerCertificates)
@@ -193,7 +193,7 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 	srv := startProxy(t, routes, &caFiles{cert: proxyCA, key: proxyKey})
 
 	conn := connectOK(t, srv.Listener.Addr().String(), host)
-	tlsConn := tlsClient(t, conn, proxyCert, "127.0.0.1")
+	tlsConn := tlsClient(t, conn, proxyCert)
 	require.NoError(t, tlsConn.HandshakeContext(t.Context()))
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+host+"/api/v1/namespaces/ns/pods/p/log", nil)
@@ -223,7 +223,7 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 		badSrv := startProxy(t, mustProxyRoutes(t, badCfg, writeKubeconfig(t, badCfg)), &caFiles{cert: badProxyCA, key: badProxyKey})
 
 		raw := connectOK(t, badSrv.Listener.Addr().String(), host)
-		clientTLS := tlsClient(t, raw, badProxyCert, "127.0.0.1")
+		clientTLS := tlsClient(t, raw, badProxyCert)
 		require.NoError(t, clientTLS.HandshakeContext(t.Context()))
 
 		stolen, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+host+"/api/v1/namespaces/ns/pods", nil)
@@ -244,7 +244,7 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 		omitSrv := startProxy(t, mustProxyRoutes(t, omitted, writeKubeconfig(t, omitted)), &caFiles{cert: omitProxyCA, key: omitProxyKey})
 
 		raw := connectOK(t, omitSrv.Listener.Addr().String(), host)
-		clientTLS := tlsClient(t, raw, omitProxyCert, "127.0.0.1")
+		clientTLS := tlsClient(t, raw, omitProxyCert)
 		require.NoError(t, clientTLS.HandshakeContext(t.Context()))
 
 		stolen, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+host+"/api/v1/namespaces/ns/pods", nil)
@@ -606,13 +606,13 @@ func connectOK(t *testing.T, proxyAddr, target string) net.Conn {
 	return bufferedConn{Conn: conn, reader: reader}
 }
 
-func tlsClient(t *testing.T, conn net.Conn, ca *x509.Certificate, serverName string) *tls.Conn {
+func tlsClient(t *testing.T, conn net.Conn, ca *x509.Certificate) *tls.Conn {
 	t.Helper()
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	return tls.Client(conn, &tls.Config{
 		RootCAs:    pool,
-		ServerName: serverName,
+		ServerName: "127.0.0.1",
 		MinVersion: tls.VersionTLS12,
 	})
 }

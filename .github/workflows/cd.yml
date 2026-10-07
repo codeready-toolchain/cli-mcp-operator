@@ -46,6 +46,14 @@ jobs:
       - name: Set build time
         run: echo "BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "${GITHUB_ENV}"
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Go version from go.mod
+        run: echo "GO_VERSION=$(go mod edit -json | jq -r .Go)" >> "${GITHUB_ENV}"
+
       - name: Build image
         id: build-image
         uses: redhat-actions/buildah-build@v2
@@ -56,6 +64,7 @@ jobs:
             ${{ matrix.containerfile }}
           platforms: linux/amd64
           build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
             GIT_COMMIT=${{ github.sha }}
             BUILD_TIME=${{ env.BUILD_TIME }}
 
