@@ -212,10 +212,13 @@ func registerInstanceTests() {
 		Expect(out).To(MatchRegexp(`(?i)timed out|timeout`))
 	})
 
-	It("rejects the Kubernetes API host on an allowlist proxy", func() {
-		// curl uses the sandbox HTTPS_PROXY. It reports the CONNECT status and
-		// discards the response body, so read that body with a second CONNECT.
-		out, err := sandboxExec(allowSandbox, "curl -sv --max-time 20 --connect-timeout 10 https://kubernetes.default.svc/api")
+	It("allows the configured domain and rejects the Kubernetes API host", func() {
+		// HTTPS_PROXY is already set. Do not follow redirects: the allowlist is example.com only.
+		out, err := sandboxExec(allowSandbox, "curl -fsS -o /dev/null --max-time 20 --connect-timeout 10 https://example.com/")
+		Expect(err).NotTo(HaveOccurred(), out)
+
+		// curl reports the CONNECT status and discards the response body, so read that body with a second CONNECT.
+		out, err = sandboxExec(allowSandbox, "curl -sv --max-time 20 --connect-timeout 10 https://kubernetes.default.svc/api")
 		Expect(err).To(HaveOccurred(), out)
 		Expect(out).To(ContainSubstring("403"), out)
 
