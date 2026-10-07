@@ -10,6 +10,7 @@ Never invent alternate package-manager commands if these work.
 
 - Build all: `make build` (`make build-operator`, `make build-server`, `make build-agent`, `make build-proxy`)
 - Test: `make test` (Go unit/envtest + `hack/` bundle-script tests)
+- Kind e2e: `make test-e2e` (GitHub Actions job; CI passes `CONTAINER_TOOL=docker`)
 - Lint: `make lint`
 - Format: `make fmt`
 - Vet: `make vet`

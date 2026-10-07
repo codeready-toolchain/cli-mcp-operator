@@ -38,7 +38,7 @@ endif
 # Tool versions: claw-operator pins, operator-sdk bumped to latest 1.42.x.
 OPERATOR_SDK_VERSION ?= v1.42.3
 OPM_VERSION ?= v1.59.0
-KIND_VERSION ?= v0.31.0
+KIND_VERSION ?= v0.33.0
 KUSTOMIZE_VERSION ?= v5.6.0
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 GOLANGCI_LINT_VERSION ?= v2.11.4
@@ -106,20 +106,64 @@ test-coverage: test
 	go tool cover -html=cover.out -o coverage.html
 
 KIND_CLUSTER ?= cli-mcp-operator-test-e2e
+KIND_CONFIG ?= test/e2e/kind-config.yaml
+# Kind v0.33 defaults to Kubernetes 1.37. Pin the 1.34 node so e2e matches
+# OpenShift 4.21. Calico v3.32 is the newest release tested with 1.34.
+KIND_NODE_IMAGE ?= kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d
+CALICO_VERSION ?= v3.32.2
+CALICO_MANIFEST ?= https://raw.githubusercontent.com/projectcalico/calico/$(CALICO_VERSION)/manifests/calico.yaml
+# kind load must use the same engine that built the images.
+KIND_PROVIDER ?= $(CONTAINER_TOOL)
 
 .PHONY: setup-test-e2e
-setup-test-e2e: kind ## Set up a Kind cluster for e2e tests if it does not exist.
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+setup-test-e2e: kind ## Set up a Kind cluster with Calico so NetworkPolicy is enforced.
+	@set -euo pipefail; \
+	export PATH="$(LOCALBIN):$(PATH)"; \
+	export KIND_EXPERIMENTAL_PROVIDER="$(KIND_PROVIDER)"; \
+	if "$(KIND)" get clusters | grep -qx "$(KIND_CLUSTER)"; then \
+		"$(KIND)" export kubeconfig --name "$(KIND_CLUSTER)"; \
+		kubelet="$$(kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')"; \
+		case "$$kubelet" in \
+			v1.34.*) ;; \
+			*) echo "Kind cluster '$(KIND_CLUSTER)' is Kubernetes $$kubelet, not v1.34. Run make cleanup-test-e2e and retry." >&2; exit 1 ;; \
+		esac; \
+		if ! kubectl get daemonset calico-node -n kube-system >/dev/null 2>&1; then \
+			echo "Kind cluster '$(KIND_CLUSTER)' has no calico-node DaemonSet. Run make cleanup-test-e2e and retry." >&2; \
+			exit 1; \
+		fi; \
+		echo "Kind cluster '$(KIND_CLUSTER)' already exists."; \
+	else \
+		echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+		"$(KIND)" create cluster --name "$(KIND_CLUSTER)" --image "$(KIND_NODE_IMAGE)" --config "$(KIND_CONFIG)"; \
+		echo "Installing Calico $(CALICO_VERSION)..."; \
+		kubectl create -f "$(CALICO_MANIFEST)"; \
+	fi; \
+	wait_ready() { \
+		selector="$$1"; \
+		deadline=$$((SECONDS + 180)); \
+		while true; do \
+			if kubectl wait --namespace kube-system --for=condition=Ready pod --selector "$$selector" --timeout=30s; then \
+				return 0; \
+			fi; \
+			if [ "$$SECONDS" -ge "$$deadline" ]; then \
+				echo "timed out waiting for $$selector" >&2; \
+				kubectl get pods -n kube-system >&2 || true; \
+				return 1; \
+			fi; \
+		done; \
+	}; \
+	wait_ready k8s-app=calico-node; \
+	wait_ready k8s-app=kube-dns
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate ## Run Kind e2e (manager + instance children).
-	KIND_CLUSTER=$(KIND_CLUSTER) go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 15m
+test-e2e: setup-test-e2e manifests generate ## Run Kind e2e (manager, Ready instance, proxy isolation).
+	@set -euo pipefail; \
+	export PATH="$(LOCALBIN):$(PATH)"; \
+	export KIND_EXPERIMENTAL_PROVIDER="$(KIND_PROVIDER)"; \
+	export CONTAINER_TOOL="$(CONTAINER_TOOL)"; \
+	export CERT_MANAGER_INSTALL_SKIP=true; \
+	export KIND_CLUSTER="$(KIND_CLUSTER)"; \
+	go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 30m
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests.

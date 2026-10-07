@@ -42,6 +42,11 @@ func BuildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 			AutomountServiceAccountToken: &automount,
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot: &runAsNonRoot,
+				// Restricted Pod Security requires a seccomp profile. The e2e
+				// namespace and OpenShift both enforce that policy.
+				SeccompProfile: &corev1.SeccompProfile{
+					Type: corev1.SeccompProfileTypeRuntimeDefault,
+				},
 			},
 			Containers: []corev1.Container{
 				{

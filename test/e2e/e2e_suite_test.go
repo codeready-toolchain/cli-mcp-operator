@@ -39,9 +39,13 @@ var (
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
 
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
-	projectImage = "example.com/cli-mcp-operator:v0.0.1"
+	// Images are tagged with an explicit version so kubelet uses IfNotPresent
+	// after they are loaded into Kind. :latest would always pull.
+	projectImage       = "example.com/cli-mcp-operator:v0.0.1"
+	serverImage        = "example.com/cli-mcp-server:v0.0.1"
+	sandboxImage       = "example.com/cli-mcp-sandbox:v0.0.1"
+	proxyImage         = "example.com/cli-mcp-proxy:v0.0.1"
+	kubeRBACProxyImage = "quay.io/brancz/kube-rbac-proxy:v0.19.1"
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -55,16 +59,35 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "container-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	if os.Getenv("KIND_EXPERIMENTAL_PROVIDER") == "" && os.Getenv("CONTAINER_TOOL") != "" {
+		Expect(os.Setenv("KIND_EXPERIMENTAL_PROVIDER", os.Getenv("CONTAINER_TOOL"))).To(Succeed())
+	}
 
-	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
-	// built and available before running the tests. Also, remove the following block.
-	By("loading the manager(Operator) image on Kind")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
+	By("building operator, server, sandbox, and proxy images")
+	for _, args := range [][]string{
+		{"container-build", "IMG=" + projectImage},
+		{"container-build-server", "SERVER_IMG=" + serverImage},
+		{"container-build-agent", "SANDBOX_IMG=" + sandboxImage},
+		{"container-build-proxy", "PROXY_IMG=" + proxyImage},
+	} {
+		cmd := exec.Command("make", args...)
+		_, err := utils.Run(cmd)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build %s", args[0])
+	}
+
+	tool := os.Getenv("CONTAINER_TOOL")
+	if tool == "" {
+		tool = "podman"
+	}
+	By("pulling kube-rbac-proxy")
+	_, err := utils.Run(exec.Command(tool, "pull", kubeRBACProxyImage))
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to pull kube-rbac-proxy")
+
+	By("loading images into Kind")
+	for _, image := range []string{projectImage, serverImage, sandboxImage, proxyImage, kubeRBACProxyImage} {
+		err = utils.LoadImageToKindClusterWithName(image)
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load %s into Kind", image)
+	}
 
 	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
 	// To prevent errors when tests run in environments with CertManager already installed,

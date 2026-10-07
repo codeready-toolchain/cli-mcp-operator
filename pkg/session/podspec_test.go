@@ -8,6 +8,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+func TestBuildBasePodSpecRuntimeDefaultSeccomp(t *testing.T) {
+	pod := BuildBasePodSpec("warm", newTestConfig())
+	require.NotNil(t, pod.Spec.SecurityContext)
+	require.NotNil(t, pod.Spec.SecurityContext.SeccompProfile)
+	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, pod.Spec.SecurityContext.SeccompProfile.Type)
+}
+
 func TestBuildBasePodSpecOverlay(t *testing.T) {
 	t.Run("merges class env and skips reserved names", func(t *testing.T) {
 		cfg := newTestConfig()

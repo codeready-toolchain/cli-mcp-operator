@@ -69,7 +69,13 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
+		cmd = exec.Command("make", "deploy",
+			"IMG="+projectImage,
+			"SERVER_IMG="+serverImage,
+			"SANDBOX_IMG="+sandboxImage,
+			"PROXY_IMG="+proxyImage,
+			"KUBE_RBAC_PROXY_IMG="+kubeRBACProxyImage,
+		)
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
@@ -78,8 +84,28 @@ var _ = Describe("Manager", Ordered, func() {
 	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
+		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
+
+		By("removing the metrics ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		// Instances carry a finalizer. Delete them while the controller is still
+		// up. If that does not finish, drop the finalizer so undeploy cannot
+		// wait forever on the namespace.
+		By("deleting CliMcpInstances")
+		cmd = exec.Command("kubectl", "delete", "climcpinstance", "--all", "-n", namespace,
+			"--ignore-not-found", "--timeout=3m")
+		_, _ = utils.Run(cmd)
+		names, err := utils.Run(exec.Command("kubectl", "get", "climcpinstance", "-n", namespace,
+			"-o", "jsonpath={.items[*].metadata.name}"))
+		if err == nil {
+			for _, name := range strings.Fields(names) {
+				_, _ = utils.Run(exec.Command("kubectl", "patch", "climcpinstance", name, "-n", namespace,
+					"--type=merge", "-p", `{"metadata":{"finalizers":[]}}`))
+			}
+		}
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
@@ -134,6 +160,15 @@ var _ = Describe("Manager", Ordered, func() {
 			} else {
 				fmt.Println("Failed to describe controller pod")
 			}
+
+			By("Fetching instance pods and logs")
+			cmd = exec.Command("kubectl", "get", "pods", "-n", namespace, "-o", "wide")
+			pods, podsErr := utils.Run(cmd)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Pods:\n%s\n%v\n", pods, podsErr)
+			cmd = exec.Command("kubectl", "logs", "-n", namespace, "-l", "cli-mcp.redhat.com/component",
+				"--all-containers", "--tail=50", "--prefix")
+			instanceLogs, logsErr := utils.Run(cmd)
+			_, _ = fmt.Fprintf(GinkgoWriter, "Instance logs:\n%s\n%v\n", instanceLogs, logsErr)
 		}
 	})
 
@@ -175,11 +210,13 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
+			_, err := utils.Run(exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found"))
+			Expect(err).NotTo(HaveOccurred(), "Failed to delete a leftover metrics ClusterRoleBinding")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=cli-mcp-operator-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
-			_, err := utils.Run(cmd)
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
@@ -262,69 +299,8 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 
-	Context("CliMcpInstance", func() {
-		It("should create MCP children for a pool-0 instance", func() {
-			By("creating the investigation kubeconfig Secret")
-			kubeconfigFile := filepath.Join(os.TempDir(), "cli-mcp-e2e-kubeconfig")
-			Expect(os.WriteFile(kubeconfigFile, []byte(`apiVersion: v1
-kind: Config
-current-context: c1
-clusters:
-- name: c1
-  cluster:
-    server: https://api.example.com:6443
-    certificate-authority-data: Y2EtMQ==
-contexts:
-- name: c1
-  context:
-    cluster: c1
-    user: u1
-users:
-- name: u1
-  user:
-    token: test-token
-`), 0o600)).To(Succeed())
-			cmd := exec.Command("kubectl", "create", "secret", "generic", "cli-mcp-oc-kubeconfig",
-				"-n", namespace,
-				"--from-file=kubeconfig="+kubeconfigFile)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("creating the TLS Secret")
-			cmd = exec.Command("kubectl", "create", "secret", "generic", "cli-mcp-oc-tls",
-				"-n", namespace,
-				"--from-literal=tls.crt=unused",
-				"--from-literal=tls.key=unused")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("creating a CliMcpInstance")
-			cmd = exec.Command("kubectl", "apply", "-n", namespace, "-f", "config/samples/cli-mcp_v1alpha1_climcpinstance.yaml")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("waiting for HMAC Secret, MCP children, and proxy children")
-			Eventually(func(g Gomega) {
-				for _, args := range [][]string{
-					{"get", "secret", "cli-mcp-oc-hmac", "-n", namespace},
-					{"get", "deploy", "cli-mcp-oc", "-n", namespace},
-					{"get", "svc", "cli-mcp-oc", "-n", namespace},
-					{"get", "sa", "cli-mcp-oc-sandbox", "-n", namespace},
-					{"get", "networkpolicy", "cli-mcp-oc-sandbox", "-n", namespace},
-					{"get", "role", "cli-mcp-oc", "-n", namespace},
-					{"get", "sa", "cli-mcp-oc-proxy", "-n", namespace},
-					{"get", "deploy", "cli-mcp-oc-proxy", "-n", namespace},
-					{"get", "svc", "cli-mcp-oc-proxy", "-n", namespace},
-					{"get", "networkpolicy", "cli-mcp-oc-proxy", "-n", namespace},
-					{"get", "configmap", "cli-mcp-oc-proxy", "-n", namespace},
-					{"get", "secret", "cli-mcp-oc-proxy-ca", "-n", namespace},
-				} {
-					c := exec.Command("kubectl", args...)
-					_, err := utils.Run(c)
-					g.Expect(err).NotTo(HaveOccurred(), strings.Join(args, " "))
-				}
-			}).Should(Succeed())
-		})
+	Context("CliMcpInstance", Ordered, func() {
+		registerInstanceTests()
 	})
 })
 

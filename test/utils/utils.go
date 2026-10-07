@@ -19,6 +19,7 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -165,16 +166,108 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
+// LoadImageToKindClusterWithName loads a local image into the Kind cluster.
+// Images are saved to a docker archive and imported with ctr --local. Kind's
+// own load uses containerd's transfer API (--all-platforms), which rejects
+// these archives on containerd 2.2 ("no unpack platforms defined").
+// KIND_EXPERIMENTAL_PROVIDER must match the engine that created the cluster.
 func LoadImageToKindClusterWithName(name string) error {
 	cluster := "kind"
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	cmd := exec.Command("kind", kindOptions...)
-	_, err := Run(cmd)
-	return err
+	tool := os.Getenv("CONTAINER_TOOL")
+	if tool == "" {
+		tool = "podman"
+	}
+	archive, err := os.CreateTemp("", "kind-image-*.tar")
+	if err != nil {
+		return err
+	}
+	archivePath := archive.Name()
+	if err := archive.Close(); err != nil {
+		return err
+	}
+	defer os.Remove(archivePath)
+
+	saveArgs := []string{"save", "-o", archivePath, name}
+	if tool == "podman" {
+		saveArgs = []string{"save", "--format", "docker-archive", "-o", archivePath, name}
+	}
+	if _, err := Run(exec.Command(tool, saveArgs...)); err != nil {
+		return err
+	}
+
+	nodesOut, err := commandStdout("kind", "get", "nodes", "--name", cluster)
+	if err != nil {
+		return err
+	}
+	nodes := GetNonEmptyLines(nodesOut)
+	if len(nodes) == 0 {
+		return fmt.Errorf("kind cluster %s has no nodes", cluster)
+	}
+	for _, node := range nodes {
+		if err := importImageArchive(tool, node, archivePath); err != nil {
+			return fmt.Errorf("import %s into %s: %w", name, node, err)
+		}
+	}
+	return nil
+}
+
+func importImageArchive(tool, node, archivePath string) error {
+	snapshotter, err := nodeSnapshotter(tool, node)
+	if err != nil {
+		return err
+	}
+	archive, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+
+	cmd := exec.Command(tool, "exec", "--privileged", "-i", node,
+		"ctr", "--namespace=k8s.io", "images", "import", "--local",
+		"--snapshotter="+snapshotter, "-")
+	cmd.Stdin = archive
+	_, _ = fmt.Fprintf(GinkgoWriter, "running: %q\n", strings.Join(cmd.Args, " "))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w", out, err)
+	}
+	return nil
+}
+
+func nodeSnapshotter(tool, node string) (string, error) {
+	out, err := commandStdout(tool, "exec", node, "awk",
+		`-F"`, `/snapshotter =/{print $2; exit}`, "/etc/containerd/config.toml")
+	if err != nil {
+		return "", err
+	}
+	snapshotter := strings.TrimSpace(out)
+	if snapshotter == "" {
+		return "", fmt.Errorf("containerd snapshotter is empty on %s", node)
+	}
+	return snapshotter, nil
+}
+
+func commandStdout(name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	dir, err := GetProjectDir()
+	if err != nil {
+		return "", err
+	}
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	out, err := cmd.Output()
+	if err != nil {
+		stderr := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr = string(exitErr.Stderr)
+		}
+		return "", fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, stderr)
+	}
+	return string(out), nil
 }
 
 // GetNonEmptyLines converts given command output string into individual objects
