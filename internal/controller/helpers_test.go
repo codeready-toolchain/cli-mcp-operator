@@ -220,7 +220,7 @@ func TestCustomSecretNameEnqueues(t *testing.T) {
 	inst := &climcpv1alpha1.CliMcpInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "oc", Namespace: "ns"},
 		Spec: climcpv1alpha1.CliMcpInstanceSpec{
-			Proxy: climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
+			Proxy: &climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
 				Type:       climcpv1alpha1.ProxyTargetKubernetes,
 				SecretName: "custom-kube",
 			}}},
@@ -253,7 +253,7 @@ func TestOverlayHashIgnoresInvestigationSecret(t *testing.T) {
 	inst := &climcpv1alpha1.CliMcpInstance{
 		ObjectMeta: metav1.ObjectMeta{Name: "oc", Namespace: "ns"},
 		Spec: climcpv1alpha1.CliMcpInstanceSpec{
-			Proxy: climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
+			Proxy: &climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
 				Type: climcpv1alpha1.ProxyTargetKubernetes,
 			}}},
 		},

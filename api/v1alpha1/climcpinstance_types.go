@@ -71,7 +71,7 @@ type CliMcpInstanceSpec struct {
 	// release will require it again, after live instances have the field.
 	// When set, targets is still required.
 	// +optional
-	Proxy ProxySpec `json:"proxy,omitempty"`
+	Proxy *ProxySpec `json:"proxy,omitempty"`
 }
 
 // ProxySpec is the proxy API. Image, replicas, and resources are operator
