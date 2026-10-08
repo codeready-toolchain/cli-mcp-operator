@@ -33,6 +33,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -1208,7 +1209,19 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(1))
 	})
 
-	It("admits literal proxy domains and rejects wildcards and a second kubernetes target", func() {
+	It("admits an omitted proxy and literal domains, and rejects wildcards and a second kubernetes target", func() {
+		// A typed create encodes a zero Proxy as "proxy": {} because omitempty does
+		// not drop structs. The staging object omits the field entirely.
+		noProxy := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "cli-mcp.redhat.com/v1alpha1",
+			"kind":       "CliMcpInstance",
+			"metadata": map[string]any{
+				"name":      "no-proxy",
+				"namespace": ns.Name,
+			},
+			"spec": map[string]any{},
+		}}
+		Expect(k8sClient.Create(ctx, noProxy)).To(Succeed())
 		mk := func(name string, targets []climcpv1alpha1.ProxyTarget) *climcpv1alpha1.CliMcpInstance {
 			return &climcpv1alpha1.CliMcpInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
