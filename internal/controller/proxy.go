@@ -342,7 +342,7 @@ func (r *CliMcpInstanceReconciler) adoptProxyCAMetadata(ctx context.Context, ins
 func (r *CliMcpInstanceReconciler) loadProxyBuild(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, ca *corev1.Secret) (proxyBuild, error) {
 	build := proxyBuild{ca: ca}
 	var routes []kubeconfig.ProxyRoute
-	for _, target := range proxyTargets(inst) {
+	for _, target := range inst.Spec.Proxy.Targets {
 		switch target.Type {
 		case climcpv1alpha1.ProxyTargetAllowlist:
 			part, err := kubeconfig.BuildAllowlistRoutes(target.Domains)

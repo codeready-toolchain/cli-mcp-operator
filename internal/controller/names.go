@@ -148,15 +148,8 @@ func proxyLabels(instance string) map[string]string {
 // effectiveKubeconfigSecretName is the admin kubeconfig Secret for a kubernetes
 // target. The bool is false when the instance has no kubernetes target.
 // An empty secretName stays empty in the spec; the conventional name is computed here.
-func proxyTargets(inst *climcpv1alpha1.CliMcpInstance) []climcpv1alpha1.ProxyTarget {
-	if inst.Spec.Proxy == nil {
-		return nil
-	}
-	return inst.Spec.Proxy.Targets
-}
-
 func effectiveKubeconfigSecretName(inst *climcpv1alpha1.CliMcpInstance) (string, bool) {
-	for _, target := range proxyTargets(inst) {
+	for _, target := range inst.Spec.Proxy.Targets {
 		if target.Type != climcpv1alpha1.ProxyTargetKubernetes {
 			continue
 		}

@@ -126,10 +126,10 @@ func TestApplyProxyMountsNamedSecretAndIgnoresTokenRotation(t *testing.T) {
 	t.Parallel()
 	scheme := proxyApplyScheme(t)
 	inst := testInstance("oc", "ns")
-	inst.Spec.Proxy = &climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
+	inst.Spec.Proxy.Targets = []climcpv1alpha1.ProxyTarget{{
 		Type:       climcpv1alpha1.ProxyTargetKubernetes,
 		SecretName: "custom-kube",
-	}}}
+	}}
 	kube := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "custom-kube", Namespace: "ns"},
 		Data:       map[string][]byte{kubeconfigDataKey: []byte(tokenKubeconfig)},

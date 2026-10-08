@@ -97,13 +97,12 @@ spec:
           - api.example.com
 ```
 
-`spec.proxy.targets` is **required** when `spec.proxy` is set (`MinItems: 1`). `spec.proxy` is optional in this release so a `CliMcpInstance` created before the field can pass CRD upgrade validation. Omitting it is not a proxy-less mode: the controller treats it as no routes and stops the proxy. No CRD default of `[{type: kubernetes}]`. A later release will require `spec.proxy` again, after live instances have the field.
+`spec.proxy.targets` is **required** (`MinItems: 1`). Omitting `spec.proxy` is invalid — there is no proxy-less instance after this pass. No CRD default of `[{type: kubernetes}]`. The sample CR is updated in PR 2 (today’s sample has no `spec.proxy`). Live CRs without the field are not in production; an apply of the old sample YAML fails admission.
 
 ### CRD (`spec.proxy`)
 
 ```text
-spec.proxy                    optional in this release; required again after live CRs have it
-spec.proxy.targets[]          required when spec.proxy is set, min 1
+spec.proxy.targets[]          required, min 1
   type                        kubernetes | allowlist
   secretName                  optional; kubernetes only; DNS-1123 label; empty → cli-mcp-<name>-kubeconfig
   domains                     allowlist only; min 1; each is host or host:port (bare host → :443)

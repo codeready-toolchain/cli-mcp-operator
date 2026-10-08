@@ -65,13 +65,9 @@ type CliMcpInstanceSpec struct {
 	ServerContainer *ServerContainerSpec `json:"serverContainer,omitempty"`
 
 	// Proxy is the credential-isolating proxy for this instance.
-	// Optional in this release so a CliMcpInstance created before the field
-	// can pass CRD upgrade validation. Omitting it is not a proxy-less mode:
-	// the controller treats it as no routes and stops the proxy. A later
-	// release will require it again, after live instances have the field.
-	// When set, targets is still required.
-	// +optional
-	Proxy *ProxySpec `json:"proxy,omitempty"`
+	// Required. Omitting it is invalid; there is no proxy-less instance.
+	// +kubebuilder:validation:Required
+	Proxy ProxySpec `json:"proxy"`
 }
 
 // ProxySpec is the proxy API. Image, replicas, and resources are operator
@@ -185,11 +181,11 @@ type CliMcpInstanceStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 44",message="metadata.name must be at most 44 characters so cli-mcp-<name>-kubeconfig is a valid DNS-1123 label"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.proxy) || self.spec.proxy.targets.filter(t, t.type == 'kubernetes').size() <= 1",message="at most one kubernetes target"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type != 'kubernetes' || !has(t.domains))",message="kubernetes target must not set domains"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type == 'kubernetes' || !has(t.secretName))",message="secretName is only valid on a kubernetes target"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type != 'allowlist' || (has(t.domains) && size(t.domains) >= 1))",message="allowlist target requires domains"
-// +kubebuilder:validation:XValidation:rule="!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type != 'allowlist' || t.domains.all(d, !d.contains('*') && !d.startsWith('.') && d.matches('^(\\\\[[0-9A-Fa-f:.]+\\\\]|[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$')))",message="domains must be literal hosts or host:port, including [ipv6]:port"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.filter(t, t.type == 'kubernetes').size() <= 1",message="at most one kubernetes target"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'kubernetes' || !has(t.domains))",message="kubernetes target must not set domains"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type == 'kubernetes' || !has(t.secretName))",message="secretName is only valid on a kubernetes target"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'allowlist' || (has(t.domains) && size(t.domains) >= 1))",message="allowlist target requires domains"
+// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'allowlist' || t.domains.all(d, !d.contains('*') && !d.startsWith('.') && d.matches('^(\\\\[[0-9A-Fa-f:.]+\\\\]|[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$')))",message="domains must be literal hosts or host:port, including [ipv6]:port"
 
 // CliMcpInstance is one MCP class/instance (one sandbox image + config, one MCP Deployment).
 type CliMcpInstance struct {

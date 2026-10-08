@@ -44,11 +44,7 @@ spec:
               proxy:
                 description: |-
                   Proxy is the credential-isolating proxy for this instance.
-                  Optional in this release so a CliMcpInstance created before the field
-                  can pass CRD upgrade validation. Omitting it is not a proxy-less mode:
-                  the controller treats it as no routes and stops the proxy. A later
-                  release will require it again, after live instances have the field.
-                  When set, targets is still required.
+                  Required. Omitting it is invalid; there is no proxy-less instance.
                 properties:
                   targets:
                     description: |-
@@ -421,6 +417,8 @@ spec:
                         type: object
                     type: object
                 type: object
+            required:
+            - proxy
             type: object
           status:
             description: CliMcpInstanceStatus is observed instance state.
@@ -515,21 +513,18 @@ spec:
             is a valid DNS-1123 label
           rule: size(self.metadata.name) <= 44
         - message: at most one kubernetes target
-          rule: '!has(self.spec.proxy) || self.spec.proxy.targets.filter(t, t.type
-            == ''kubernetes'').size() <= 1'
+          rule: self.spec.proxy.targets.filter(t, t.type == 'kubernetes').size() <=
+            1
         - message: kubernetes target must not set domains
-          rule: '!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type !=
-            ''kubernetes'' || !has(t.domains))'
+          rule: self.spec.proxy.targets.all(t, t.type != 'kubernetes' || !has(t.domains))
         - message: secretName is only valid on a kubernetes target
-          rule: '!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type ==
-            ''kubernetes'' || !has(t.secretName))'
+          rule: self.spec.proxy.targets.all(t, t.type == 'kubernetes' || !has(t.secretName))
         - message: allowlist target requires domains
-          rule: '!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type !=
-            ''allowlist'' || (has(t.domains) && size(t.domains) >= 1))'
+          rule: self.spec.proxy.targets.all(t, t.type != 'allowlist' || (has(t.domains)
+            && size(t.domains) >= 1))
         - message: domains must be literal hosts or host:port, including [ipv6]:port
-          rule: '!has(self.spec.proxy) || self.spec.proxy.targets.all(t, t.type !=
-            ''allowlist'' || t.domains.all(d, !d.contains(''*'') && !d.startsWith(''.'')
-            && d.matches(''^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$'')))'
+          rule: self.spec.proxy.targets.all(t, t.type != 'allowlist' || t.domains.all(d,
+            !d.contains('*') && !d.startsWith('.') && d.matches('^(\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$')))
     served: true
     storage: true
     subresources:

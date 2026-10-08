@@ -1158,7 +1158,7 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
 			Spec: climcpv1alpha1.CliMcpInstanceSpec{
 				Replicas: 1,
-				Proxy: &climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
+				Proxy: climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
 					Type:    climcpv1alpha1.ProxyTargetAllowlist,
 					Domains: []string{"example.com"},
 				}}},
@@ -1208,14 +1208,11 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(1))
 	})
 
-	It("admits an omitted proxy and literal domains, and rejects wildcards and a second kubernetes target", func() {
-		Expect(k8sClient.Create(ctx, &climcpv1alpha1.CliMcpInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: "no-proxy", Namespace: ns.Name},
-		})).To(Succeed())
+	It("admits literal proxy domains and rejects wildcards and a second kubernetes target", func() {
 		mk := func(name string, targets []climcpv1alpha1.ProxyTarget) *climcpv1alpha1.CliMcpInstance {
 			return &climcpv1alpha1.CliMcpInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
-				Spec:       climcpv1alpha1.CliMcpInstanceSpec{Proxy: &climcpv1alpha1.ProxySpec{Targets: targets}},
+				Spec:       climcpv1alpha1.CliMcpInstanceSpec{Proxy: climcpv1alpha1.ProxySpec{Targets: targets}},
 			}
 		}
 		Expect(k8sClient.Create(ctx, mk("two-k", []climcpv1alpha1.ProxyTarget{
@@ -1239,19 +1236,6 @@ var _ = Describe("CliMcpInstance Controller", func() {
 			Type:    climcpv1alpha1.ProxyTargetAllowlist,
 			Domains: []string{"[2001:db8::1]:443"},
 		}}))).To(Succeed())
-	})
-
-	It("adds a finalizer without writing an empty spec.proxy", func() {
-		nn := types.NamespacedName{Name: "no-proxy-finalizer", Namespace: ns.Name}
-		Expect(k8sClient.Create(ctx, &climcpv1alpha1.CliMcpInstance{
-			ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
-		})).To(Succeed())
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-		Expect(err).NotTo(HaveOccurred())
-		got := &climcpv1alpha1.CliMcpInstance{}
-		Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
-		Expect(got.Finalizers).To(ContainElement(finalizerName))
-		Expect(got.Spec.Proxy).To(BeNil())
 	})
 })
 
@@ -1284,8 +1268,8 @@ users:
     token: test-token
 `
 
-func kubernetesProxySpec() *climcpv1alpha1.ProxySpec {
-	return &climcpv1alpha1.ProxySpec{
+func kubernetesProxySpec() climcpv1alpha1.ProxySpec {
+	return climcpv1alpha1.ProxySpec{
 		Targets: []climcpv1alpha1.ProxyTarget{{
 			Type: climcpv1alpha1.ProxyTargetKubernetes,
 		}},
