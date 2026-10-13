@@ -140,7 +140,7 @@ An allowlist class is the same binary and a different custom resource, image, ro
 ### Custom resource
 
 ```text
-spec.proxy.targets[]          required, min 1
+spec.proxy.targets[]          required, min 1, max 8. domains min 1, max 16, each entry at most 253 characters.
   type                        kubernetes | allowlist
   secretName                  optional; kubernetes only; DNS-1123 label; empty → cli-mcp-<name>-kubeconfig
   domains                     allowlist only; min 1; each is host or host:port (bare host → :443)
