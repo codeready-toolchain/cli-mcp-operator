@@ -65,6 +65,9 @@ func ParseAllowlistDomain(domain string) (string, error) {
 	if domain == "" {
 		return "", fmt.Errorf("domain is empty")
 	}
+	if strings.Contains(domain, "://") || strings.Contains(domain, "/") {
+		return "", fmt.Errorf("domain %q: not a host", domain)
+	}
 	if strings.Contains(domain, "*") {
 		return "", fmt.Errorf("domain %q: wildcards are not allowed", domain)
 	}

@@ -56,7 +56,7 @@ spec:
       - type: kubernetes       # secretName omitted → cli-mcp-oc-kubeconfig
 ```
 
-`spec.proxy.targets` is required. `kubernetes` takes an optional `secretName` (key `kubeconfig`) and at most one such target. `allowlist` takes literal `domains` (`host` or `host:port`; a bare host is port 443). Mixing both on one custom resource is that class’s combined allowlist. An allowlist-only instance has no kubeconfig Secret and no dummy mount:
+`spec.proxy.targets` is required. `kubernetes` takes an optional `secretName` (key `kubeconfig`) and at most one such target. `allowlist` takes `domains` (`host` or `host:port`; a bare host is port 443). A domain that is not a host is left out of the proxy routes. Ready is false with reason `ProxyRoutesInvalid`, and the other domains in that object are still routed. The same host on both a kubernetes target and an allowlist is not routed. Mixing both on one custom resource is that class’s combined allowlist. An allowlist-only instance has no kubeconfig Secret and no dummy mount:
 
 ```yaml
 spec:

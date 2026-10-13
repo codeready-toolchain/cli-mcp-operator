@@ -32,6 +32,7 @@ const (
 	ReasonSecretsNotFound       = "SecretsNotFound"
 	ReasonSecretKeysInvalid     = "SecretKeysInvalid"
 	ReasonKubeconfigInvalid     = "KubeconfigInvalid"
+	ReasonProxyRoutesInvalid    = "ProxyRoutesInvalid"
 	ReasonDeploymentUnavailable = "DeploymentUnavailable"
 	ReasonChildrenNotReady      = "ChildrenNotReady"
 	ReasonWarmPoolNotReady      = "WarmPoolNotReady"
@@ -77,7 +78,7 @@ type ProxySpec struct {
 	// At most one kubernetes target. Mixing kubernetes and allowlist is this
 	// instance's union.
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:MaxItems=2
 	// +listType=atomic
 	Targets []ProxyTarget `json:"targets"`
 }
@@ -97,12 +98,12 @@ type ProxyTarget struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	SecretName string `json:"secretName,omitempty"`
 
-	// Domains are literal hosts or host:port values. Allowlist only.
-	// A bare host means port 443 when routes are built. No wildcards and no
-	// leading-dot suffixes.
+	// Domains are host or host:port values. Allowlist only. A bare host means
+	// port 443 when routes are built. An entry that is not a host is omitted
+	// from the proxy routes and reported on Ready.
 	// +optional
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:MaxItems=512
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=253
 	// +listType=set
@@ -185,7 +186,6 @@ type CliMcpInstanceStatus struct {
 // +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'kubernetes' || !has(t.domains))",message="kubernetes target must not set domains"
 // +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type == 'kubernetes' || !has(t.secretName))",message="secretName is only valid on a kubernetes target"
 // +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'allowlist' || (has(t.domains) && size(t.domains) >= 1))",message="allowlist target requires domains"
-// +kubebuilder:validation:XValidation:rule="self.spec.proxy.targets.all(t, t.type != 'allowlist' || t.domains.all(d, !d.contains('*') && !d.startsWith('.') && d.matches('^(\\\\[[0-9A-Fa-f:.]+\\\\]|[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$')))",message="domains must be literal hosts or host:port, including [ipv6]:port"
 
 // CliMcpInstance is one MCP class/instance (one sandbox image + config, one MCP Deployment).
 type CliMcpInstance struct {

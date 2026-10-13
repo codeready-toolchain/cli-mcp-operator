@@ -280,6 +280,9 @@ func (r *CliMcpInstanceReconciler) readyGate(ctx context.Context, orig, inst *cl
 	if invalid, msg := r.kubeconfigInvalid(ctx, inst); invalid {
 		return false, climcpv1alpha1.ReasonKubeconfigInvalid, msg
 	}
+	if invalid, msg := r.proxyRoutesInvalid(ctx, inst); invalid {
+		return false, climcpv1alpha1.ReasonProxyRoutesInvalid, msg
+	}
 	if missing, msg := r.missingChildren(ctx, inst); missing {
 		return false, climcpv1alpha1.ReasonChildrenNotReady, msg
 	}
@@ -400,6 +403,37 @@ func (r *CliMcpInstanceReconciler) kubeconfigInvalid(ctx context.Context, inst *
 		return true, err.Error()
 	}
 	return false, ""
+}
+
+func (r *CliMcpInstanceReconciler) proxyRoutesInvalid(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (bool, string) {
+	kubeRoutes, err := r.kubernetesProxyRoutes(ctx, inst)
+	if err != nil {
+		return true, err.Error()
+	}
+	_, problems := collectProxyRoutes(inst.Spec.Proxy.Targets, kubeRoutes)
+	if len(problems) == 0 {
+		return false, ""
+	}
+	return true, proxyRouteProblemMessage(problems)
+}
+
+func (r *CliMcpInstanceReconciler) kubernetesProxyRoutes(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) ([]kubeconfig.ProxyRoute, error) {
+	name, ok := effectiveKubeconfigSecretName(inst)
+	if !ok {
+		return nil, nil
+	}
+	kube, err := r.getSecret(ctx, inst.Namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	if kube == nil || !secretKeyNonEmpty(kube, kubeconfigDataKey) {
+		return nil, nil
+	}
+	routes, err := kubeconfig.BuildProxyRoutes(kube.Data[kubeconfigDataKey], proxyKubeconfigPath)
+	if err != nil {
+		return nil, err
+	}
+	return routes, nil
 }
 
 func (r *CliMcpInstanceReconciler) sandboxEgressNotReady(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (bool, string) {

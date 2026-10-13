@@ -492,6 +492,8 @@ func TestBuildAllowlistRoutesRejects(t *testing.T) {
 		{name: "leading dot", domains: []string{".example.com"}, wantErr: "leading-dot"},
 		{name: "bad port", domains: []string{"example.com:70000"}, wantErr: "invalid port"},
 		{name: "bare ipv6", domains: []string{"2001:db8::1"}, wantErr: "IPv6"},
+		{name: "url", domains: []string{"https://quay.io"}, wantErr: "not a host"},
+		{name: "path", domains: []string{"example.com/foo"}, wantErr: "not a host"},
 		{name: "duplicate", domains: []string{"Example.com", "example.com:443"}, wantErr: "duplicate"},
 	}
 	for _, tt := range tests {

@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1208,7 +1209,38 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(listUnassignedSandbox(ctx, ns.Name)).To(HaveLen(1))
 	})
 
-	It("admits literal proxy domains and rejects wildcards and a second kubernetes target", func() {
+	It("routes valid allowlist domains and reports the ones it skips", func() {
+		inst := &climcpv1alpha1.CliMcpInstance{
+			ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
+			Spec: climcpv1alpha1.CliMcpInstanceSpec{
+				Proxy: climcpv1alpha1.ProxySpec{Targets: []climcpv1alpha1.ProxyTarget{{
+					Type:    climcpv1alpha1.ProxyTargetAllowlist,
+					Domains: []string{"example.com", "*.example.com", "https://quay.io"},
+				}}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, inst)).To(Succeed())
+		createTLSSecret(ctx, ns.Name)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, cm)).To(Succeed())
+		Expect(cm.Data[proxyConfigDataKey]).To(ContainSubstring("example.com:443"))
+		Expect(cm.Data[proxyConfigDataKey]).NotTo(ContainSubstring("*"))
+		Expect(cm.Data[proxyConfigDataKey]).NotTo(ContainSubstring("quay.io"))
+
+		got := &climcpv1alpha1.CliMcpInstance{}
+		Expect(k8sClient.Get(ctx, nn, got)).To(Succeed())
+		cond := meta.FindStatusCondition(got.Status.Conditions, climcpv1alpha1.ConditionReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(climcpv1alpha1.ReasonProxyRoutesInvalid))
+		Expect(cond.Message).To(ContainSubstring("*.example.com"))
+		Expect(cond.Message).To(ContainSubstring("https://quay.io"))
+	})
+
+	It("admits literal proxy domains and rejects a second kubernetes target", func() {
 		mk := func(name string, targets []climcpv1alpha1.ProxyTarget) *climcpv1alpha1.CliMcpInstance {
 			return &climcpv1alpha1.CliMcpInstance{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
@@ -1222,6 +1254,23 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(k8sClient.Create(ctx, mk("wild", []climcpv1alpha1.ProxyTarget{{
 			Type:    climcpv1alpha1.ProxyTargetAllowlist,
 			Domains: []string{"*.example.com"},
+		}}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, mk("pair", []climcpv1alpha1.ProxyTarget{
+			{Type: climcpv1alpha1.ProxyTargetKubernetes},
+			{Type: climcpv1alpha1.ProxyTargetAllowlist, Domains: []string{"example.com"}},
+		}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, mk("three", []climcpv1alpha1.ProxyTarget{
+			{Type: climcpv1alpha1.ProxyTargetAllowlist, Domains: []string{"a.example.com"}},
+			{Type: climcpv1alpha1.ProxyTargetAllowlist, Domains: []string{"b.example.com"}},
+			{Type: climcpv1alpha1.ProxyTargetAllowlist, Domains: []string{"c.example.com"}},
+		}))).NotTo(Succeed())
+		Expect(k8sClient.Create(ctx, mk("full", []climcpv1alpha1.ProxyTarget{{
+			Type:    climcpv1alpha1.ProxyTargetAllowlist,
+			Domains: allowlistDomains(512),
+		}}))).To(Succeed())
+		Expect(k8sClient.Create(ctx, mk("over", []climcpv1alpha1.ProxyTarget{{
+			Type:    climcpv1alpha1.ProxyTargetAllowlist,
+			Domains: allowlistDomains(513),
 		}}))).NotTo(Succeed())
 		Expect(k8sClient.Create(ctx, mk("secname", []climcpv1alpha1.ProxyTarget{{
 			Type:       climcpv1alpha1.ProxyTargetAllowlist,
@@ -1238,6 +1287,14 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}}))).To(Succeed())
 	})
 })
+
+func allowlistDomains(n int) []string {
+	domains := make([]string, n)
+	for i := range domains {
+		domains[i] = "h" + strconv.Itoa(i) + ".example.com"
+	}
+	return domains
+}
 
 func testImages() Images {
 	return Images{
