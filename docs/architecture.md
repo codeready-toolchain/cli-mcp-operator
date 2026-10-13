@@ -2,7 +2,7 @@
 
 How CLI MCP works.
 
-An MCP client gets a persistent bash shell in its own pod. The pod’s CLIs can reach only a credential proxy. The proxy allows that instance’s targets and discards whatever token the shell presents. A `kubernetes` target then injects the investigation credential. An `allowlist` target injects nothing.
+An MCP client gets a persistent bash shell in its own pod. Commands reach allowed hosts through this instance’s credential proxy. DNS lookups use the cluster DNS. The proxy allows that instance’s targets and discards the token the shell presents. A `kubernetes` target then injects the investigation credential. An `allowlist` target injects nothing.
 
 ```mermaid
 flowchart TB
