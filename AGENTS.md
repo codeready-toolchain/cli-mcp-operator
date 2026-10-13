@@ -1,8 +1,8 @@
-# cli-mcp-server - agent guide
+# cli-mcp-operator - agent guide
 
 MCP control plane in Go that gives agents a sandboxed bash shell inside per-session Kubernetes pods. Binaries: `cmd/operator` (manager), `cmd/server` (MCP server), `cmd/agent` (sandbox data plane), and `cmd/proxy` (credential proxy). Do not conflate them.
 
-Go 1.26+. Default branch: `master`. Architecture: `README.md`, `docs/architecture-overview.md`, `docs/design.md`.
+Go 1.26+. Default branch: `master`. Architecture: `docs/architecture.md`. Decisions: `docs/adr/`.
 
 ## Commands
 
