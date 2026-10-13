@@ -202,7 +202,7 @@ One token per server `host:port`. Contexts that share a server may differ by nam
 
 The dummy kubeconfig preserves clusters (real `server` URLs), contexts, and namespaces. Every user token becomes `proxy-managed-token`. Each cluster’s `certificate-authority-data` is the proxy CA, not the real API CA. Real API CAs, when present, go on the proxy route so the proxy trusts only that CA upstream. An omitted cluster CA leaves the route CA unset and the proxy uses the public trust store for that host.
 
-Delivery is a ConfigMap (no real credentials), mounted read-only at `/config` with `KUBECONFIG=/config/kubeconfig` when a kubernetes target exists. The real kubeconfig Secret is mounted only on the proxy. The admin Secret is not deleted and has no owner reference. Allowlist-only instances skip the dummy mount and still get `HTTPS_PROXY` and the proxy CA.
+The dummy ConfigMap key kubeconfig is mounted read-only with `subPath: kubeconfig` at `/config/kubeconfig`, and KUBECONFIG is that path. The directory mount at `/config` is only the local/dev Secret, used when proxy flags are unset.
 
 Effective Secret name: `secretName` if set, otherwise `cli-mcp-<name>-kubeconfig`. Key `kubeconfig`. Dummy and routes live in ConfigMap `cli-mcp-<name>-proxy` (data `kubeconfig` and `proxy-config.json`; the dummy key only when a kubernetes target exists).
 
