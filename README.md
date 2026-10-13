@@ -2,7 +2,7 @@
 
 Kubernetes operator that gives AI agents a sandboxed bash shell in per-session pods.
 
-Agents call one tool, `bash`: pipes, redirects, and whatever CLIs are in the sandbox image. The MCP server is stateless. Session state lives in the pod. The sandbox’s only path out is a credential proxy, which replaces any token the shell presents with the investigation credential.
+Agents call one tool, `bash`: pipes, redirects, and whatever CLIs are in the sandbox image. The MCP server is stateless. Session state lives in the pod. Commands leave the pod through a credential proxy, which discards the token the shell presents. A kubernetes target replaces it with the investigation credential. An allowlist target injects nothing.
 
 ```mermaid
 flowchart LR
