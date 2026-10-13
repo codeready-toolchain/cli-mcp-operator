@@ -20,7 +20,7 @@ How the pieces behave: [Architecture](docs/architecture.md).
 
 ## Install
 
-OLM, or the kustomize manifests. Apply a custom resource. A `kubernetes` target also needs an investigation kubeconfig Secret (`cli-mcp-<name>-kubeconfig`, key `kubeconfig`). On generic Kubernetes, provide a TLS Secret for the MCP Service. When the instance is Ready, mint a client token from `status.clientServiceAccount`.
+OLM, or the kustomize manifests. Apply a custom resource. A `kubernetes` target also needs an investigation kubeconfig Secret (`cli-mcp-<name>-kubeconfig`, key `kubeconfig`). On generic Kubernetes, create Secret cli-mcp-<name>-tls with keys tls.crt and tls.key. On OpenShift the Service serving-cert annotation fills that Secret. The operator does not create it.
 
 ```yaml
 apiVersion: cli-mcp.redhat.com/v1alpha1
