@@ -196,7 +196,7 @@ The sandbox NetworkPolicy name stays `cli-mcp-<name>-sandbox`. The proxy Network
 
 ### Dummy kubeconfig
 
-Token-only parse. Reject client certificates, exec, auth-provider, basic auth, `tokenFile`, `certificate-authority` file paths, and `insecure-skip-tls-verify`. Inline `certificate-authority-data` is optional. The same server cannot mix a CA with a different CA, or a CA with no CA.
+Token-only parse. Reject client certificates, exec, auth-provider, basic auth, `tokenFile`, `certificate-authority` file paths, and `insecure-skip-tls-verify`, a missing token, a non-https server URL, and a cluster that no context references. Inline `certificate-authority-data` is optional. The same server cannot mix a CA with a different CA, or a CA with no CA.
 
 One token per server `host:port`. Contexts that share a server may differ by namespace. Different tokens for that same server are `KubeconfigInvalid` (no last-write-wins, and `current-context` is not a tie-break). Different servers keep different tokens.
 
