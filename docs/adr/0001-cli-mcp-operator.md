@@ -125,7 +125,7 @@ Namespaced children of a custom resource `metadata.name=oc` use the prefix `cli-
 |---|---|
 | Deployment `cli-mcp-oc` | kube-rbac-proxy `:8443` to the MCP server on `127.0.0.1:8080`. The sidecar mounts ConfigMap `cli-mcp-oc-krp`. |
 | Service `cli-mcp-oc` | ClusterIP `:8443`. OpenShift serving-cert annotation when the cluster is OpenShift. |
-| ServiceAccount `cli-mcp-oc` | MCP pod identity for session objects and for the kube-rbac-proxy sidecar. There is no dedicated proxy ServiceAccount. |
+| ServiceAccount `cli-mcp-oc` | MCP pod identity for session objects and for the kube-rbac-proxy sidecar. The sidecar has no ServiceAccount of its own. The credential proxy ServiceAccount is cli-mcp-<name>-proxy.|
 | Role + RoleBinding `cli-mcp-oc` | Pods create/get/list/watch/update/patch/delete. Secrets create/delete only. No secret get/list/watch. |
 | ConfigMap `cli-mcp-oc-krp` | kube-rbac-proxy ResourceAttributes for this custom resource. Its resourceVersion is stamped on the pod template so an edit rolls the sidecar. |
 | ServiceAccount `cli-mcp-oc-client` | MCP HTTP client identity. The token is not operator-minted. Name published on `status.clientServiceAccount`. |
