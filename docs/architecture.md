@@ -95,7 +95,7 @@ Deleting the custom resource scales the MCP Deployment to zero, waits until its 
 
 The sandbox ServiceAccount has no RoleBindings and does not automount a token. There is no command allowlist.
 
-With a kubernetes target the sandbox mounts a dummy kubeconfig: the real API hostnames, the token `proxy-managed-token`, and the proxy CA. The admin kubeconfig Secret is mounted only on the proxy. `HTTPS_PROXY` points at this instance’s proxy Service. `NO_PROXY` is loopback only, so `oc` cannot reach the in-cluster API directly.
+With a kubernetes target the sandbox mounts a dummy kubeconfig: the real API hostnames, the token `proxy-managed-token`, and the proxy CA. The admin kubeconfig Secret is mounted only on the proxy. `HTTPS_PROXY` points at this instance’s proxy Service. `NO_PROXY` is loopback only, so calls to the API hostname go through the proxy. The network policy blocks a direct call, unset HTTPS_PROXY, and --server..
 
 The proxy, on every CONNECT and every proxied request:
 
