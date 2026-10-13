@@ -77,7 +77,7 @@ The operator turns spec into Deployment flags and mounts. Pool size and idle tim
 2. kube-rbac-proxy checks that token against the fake subresource `climcpinstances/mcp` for this custom resource.
 3. The MCP server finds the session pod: memory cache, then a label lookup, then claim an unassigned pool pod, otherwise create one.
 4. It `POST`s the command to the agent on `:8090` with an HMAC bearer for that session.
-5. The agent runs it in a long-lived bash process and returns stdout, stderr, exit code, and duration. A non-zero exit is a tool result.
+5. The agent runs it in the long-lived bash process and returns stdout, stderr, exit code, and duration. A non-zero exit is a tool result with isError: true, not a transport error.
 
 `command` is required. `timeout` defaults to 60 seconds and caps at 300. The same session id reuses the shell, environment, and `/workspace` (`emptyDir`).
 
