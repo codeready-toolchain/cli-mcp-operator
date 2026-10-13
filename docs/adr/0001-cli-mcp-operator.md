@@ -273,7 +273,7 @@ One custom resource is one sandbox class plus one MCP Deployment. `spec.replicas
 
 `spec.proxy.targets` is required. Its shape is [ADR-0002](0002-credential-proxy.md). Omitting `spec.proxy` is invalid.
 
-Operator-owned on every sandbox pod: dedicated ServiceAccount, `automountServiceAccountToken: false`, instance and component labels, probes, agent port, and the non-root drop-capabilities security context. The kubeconfig volume is the dummy ConfigMap when a kubernetes target exists ([ADR-0002](0002-credential-proxy.md)). The session token env is set only when the pod is assigned.
+Operator-owned on every sandbox pod: dedicated ServiceAccount, `automountServiceAccountToken: false`, instance and component labels, agent port :8090, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, drop all capabilities, `allowPrivilegeEscalation: false`, and one readiness probe. An HTTP probe from the node would miss the ingress policy. The kubeconfig volume is the dummy ConfigMap when a kubernetes target exists ([ADR-0002](0002-credential-proxy.md)). The session token env is set only when the pod is assigned.
 
 User-mergeable fields on `spec.sandbox`: `image`, `resources`, `env` (including `valueFrom`), `imagePullPolicy`. Empty image means `RELATED_IMAGE_SANDBOX`. Empty resources mean the default requests and limits. Extra Secrets in `valueFrom` are admin-owned and are not Ready gates.
 
