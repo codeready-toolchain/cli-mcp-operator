@@ -151,7 +151,7 @@ CEL, in addition to the existing name length of at most 44:
 - At most one `type: kubernetes`.
 - `kubernetes` must not set `domains`. `secretName` only on `kubernetes`.
 - `allowlist` requires non-empty `domains` and must not set `secretName`.
-- `domains` entries are literal hosts or `host:port`. No `*.example.com` and no leading-dot suffix. An invalid port is rejected.
+- `domains` entries are literal hosts or `host:port`. IPv6 is [addr] or [addr]:port; a bare IPv6 string is rejected. A bare host is port 443. No *.example.com and no leading-dot suffix. Kubeconfig server URLs must be https.
 
 There is no `spec.proxy.image`, `spec.proxy.replicas`, `spec.proxy.resources`, or secret key field. The key stays `kubeconfig`. The operator computes the effective Secret name and does not write that default back onto the stored spec. Mixing kubernetes and allowlist on one custom resource is that class’s union. The first-party `oc` sample is kubernetes only.
 
