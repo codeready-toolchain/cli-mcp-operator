@@ -40,7 +40,7 @@ spec:
 | `command` | yes | Full bash |
 | `timeout` | no | Seconds (default 60, max 300) |
 
-Send `X-Session-ID` (an RFC 1123 label) so later calls reuse the same shell and `/workspace`. `DELETE /sessions/{id}` removes the sandbox. Otherwise the operator collects it after the idle timeout. A non-zero exit code is a tool result.
+Send `X-Session-ID` (an RFC 1123 label) so later calls reuse the same shell and `/workspace`. `DELETE /sessions/{id}` removes the sandbox. Otherwise the operator collects it after the idle timeout. A non-zero exit is a tool result with isError: true and the command output. It is not a transport error.
 
 ## Development
 
