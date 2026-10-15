@@ -29,6 +29,7 @@ import (
 	"maps"
 	"math/big"
 	"slices"
+	"strings"
 	"time"
 
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
@@ -341,32 +342,26 @@ func (r *CliMcpInstanceReconciler) adoptProxyCAMetadata(ctx context.Context, ins
 
 func (r *CliMcpInstanceReconciler) loadProxyBuild(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, ca *corev1.Secret) (proxyBuild, error) {
 	build := proxyBuild{ca: ca}
-	var routes []kubeconfig.ProxyRoute
+	var kubeRoutes []kubeconfig.ProxyRoute
 	for _, target := range inst.Spec.Proxy.Targets {
 		switch target.Type {
 		case climcpv1alpha1.ProxyTargetAllowlist:
-			part, err := kubeconfig.BuildAllowlistRoutes(target.Domains)
-			if err != nil {
-				return build, fmt.Errorf("allowlist routes: %w", err)
-			}
-			routes = append(routes, part...)
+			continue
 		case climcpv1alpha1.ProxyTargetKubernetes:
 			part, dummy, secret, err := r.kubernetesRoutes(ctx, inst, ca)
 			if err != nil {
 				return build, err
 			}
-			routes = append(routes, part...)
+			kubeRoutes = append(kubeRoutes, part...)
 			build.dummy = dummy
 			build.kube = secret
 		default:
 			return build, fmt.Errorf("unknown proxy target type %q", target.Type)
 		}
 	}
-	merged, err := mergeRoutes(routes)
-	if err != nil {
-		return build, err
-	}
-	build.routes = merged
+	// Skipped domains stay out of the route list and are reported on Ready.
+	// They must not fail this build, or one bad entry would block the rest.
+	build.routes, _ = collectProxyRoutes(inst.Spec.Proxy.Targets, kubeRoutes)
 	return build, nil
 }
 
@@ -667,17 +662,114 @@ func npPorts(pairs ...portPair) []networkingv1.NetworkPolicyPort {
 	return out
 }
 
-func mergeRoutes(routes []kubeconfig.ProxyRoute) ([]kubeconfig.ProxyRoute, error) {
-	seen := make(map[string]struct{}, len(routes))
-	out := make([]kubeconfig.ProxyRoute, 0, len(routes))
-	for _, route := range routes {
-		if _, ok := seen[route.Domain]; ok {
-			return nil, fmt.Errorf("duplicate proxy route %s", route.Domain)
+// routeProblem is one allowlist entry or host that was left out of the route list.
+type routeProblem struct {
+	entry  string
+	reason string
+}
+
+// collectProxyRoutes keeps every host that parses to one injector. An entry that
+// is not a host is skipped. The same host with two injectors is skipped. The
+// same host twice with one injector is kept once. Conflicts are reported before
+// entries that are not hosts, so the Ready message shows the dropped API host
+// ahead of truncated junk.
+func collectProxyRoutes(targets []climcpv1alpha1.ProxyTarget, kubeRoutes []kubeconfig.ProxyRoute) ([]kubeconfig.ProxyRoute, []routeProblem) {
+	routes := make([]kubeconfig.ProxyRoute, 0, len(kubeRoutes))
+	routes = append(routes, kubeRoutes...)
+	var problems []routeProblem
+	for _, target := range targets {
+		if target.Type != climcpv1alpha1.ProxyTargetAllowlist {
+			continue
 		}
-		seen[route.Domain] = struct{}{}
-		out = append(out, route)
+		part, skipped := allowlistRoutes(target.Domains)
+		routes = append(routes, part...)
+		problems = append(problems, skipped...)
 	}
-	slices.SortFunc(out, func(a, b kubeconfig.ProxyRoute) int {
+	merged, conflicts := mergeRoutes(routes)
+	return merged, append(conflicts, problems...)
+}
+
+func allowlistRoutes(domains []string) ([]kubeconfig.ProxyRoute, []routeProblem) {
+	routes := make([]kubeconfig.ProxyRoute, 0, len(domains))
+	var problems []routeProblem
+	seen := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		host, err := kubeconfig.ParseAllowlistDomain(domain)
+		if err != nil {
+			problems = append(problems, routeProblem{entry: domain, reason: routeSkipReason(err)})
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		routes = append(routes, kubeconfig.ProxyRoute{
+			Domain:   host,
+			Injector: kubeconfig.InjectorNone,
+		})
+	}
+	return routes, problems
+}
+
+func routeSkipReason(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, ": "); i >= 0 && i+2 < len(msg) {
+		return msg[i+2:]
+	}
+	return msg
+}
+
+func proxyRouteProblemMessage(problems []routeProblem) string {
+	const shown = 3
+	n := len(problems)
+	limit := min(n, shown)
+	parts := make([]string, 0, limit)
+	for _, problem := range problems[:limit] {
+		parts = append(parts, fmt.Sprintf("%q (%s)", strings.TrimSpace(problem.entry), problem.reason))
+	}
+	noun := "domains"
+	if n == 1 {
+		noun = "domain"
+	}
+	msg := fmt.Sprintf("ignored %d proxy %s: %s", n, noun, strings.Join(parts, ", "))
+	if n > shown {
+		msg += fmt.Sprintf(", and %d more", n-shown)
+	}
+	return msg
+}
+
+func mergeRoutes(routes []kubeconfig.ProxyRoute) ([]kubeconfig.ProxyRoute, []routeProblem) {
+	type seenRoute struct {
+		route    kubeconfig.ProxyRoute
+		conflict bool
+	}
+	byHost := make(map[string]*seenRoute, len(routes))
+	order := make([]string, 0, len(routes))
+	for _, route := range routes {
+		current, ok := byHost[route.Domain]
+		if !ok {
+			byHost[route.Domain] = &seenRoute{route: route}
+			order = append(order, route.Domain)
+			continue
+		}
+		if current.route.Injector != route.Injector {
+			current.conflict = true
+		}
+	}
+	kept := make([]kubeconfig.ProxyRoute, 0, len(order))
+	var problems []routeProblem
+	for _, host := range order {
+		current := byHost[host]
+		if current.conflict {
+			problems = append(problems, routeProblem{
+				entry:  host,
+				reason: "claimed by kubernetes and allowlist",
+			})
+			continue
+		}
+		kept = append(kept, current.route)
+	}
+	slices.SortFunc(kept, func(a, b kubeconfig.ProxyRoute) int {
 		if a.Domain < b.Domain {
 			return -1
 		}
@@ -686,7 +778,7 @@ func mergeRoutes(routes []kubeconfig.ProxyRoute) ([]kubeconfig.ProxyRoute, error
 		}
 		return 0
 	})
-	return out, nil
+	return kept, problems
 }
 
 func caUsable(secret *corev1.Secret) bool {
