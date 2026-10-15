@@ -418,12 +418,19 @@ func TestApplyProxyOmitsConflictAndReportsIt(t *testing.T) {
 	invalid, msg := r.proxyRoutesInvalid(t.Context(), inst)
 	assert.True(t, invalid)
 	assert.NotContains(t, msg, "proxy is not running")
+	assert.Contains(t, msg, "the other host is still routed")
 	conflict := strings.Index(msg, "api.example.com:6443")
 	wild := strings.Index(msg, "*.example.com")
 	require.GreaterOrEqual(t, conflict, 0)
 	require.GreaterOrEqual(t, wild, 0)
 	assert.Less(t, conflict, wild)
 	assert.NotContains(t, msg, "registry.redhat.io")
+
+	inst.Spec.Proxy.Targets[1].Domains = append(inst.Spec.Proxy.Targets[1].Domains, "quay.io")
+	invalid, msg = r.proxyRoutesInvalid(t.Context(), inst)
+	assert.True(t, invalid)
+	assert.Contains(t, msg, "the other hosts are still routed")
+	assert.NotContains(t, msg, "proxy is not running")
 }
 
 func TestCollectProxyRoutesListsConflictsBeforeBadDomains(t *testing.T) {

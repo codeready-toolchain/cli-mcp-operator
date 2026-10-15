@@ -419,6 +419,10 @@ func (r *CliMcpInstanceReconciler) proxyRoutesInvalid(ctx context.Context, inst 
 		// applyProxy already stopped the proxy, or never started it. "Ignored"
 		// alone reads as if the other hosts were still served.
 		msg = "proxy is not running; " + msg
+	} else if len(routes) == 1 {
+		msg += "; the other host is still routed"
+	} else {
+		msg += "; the other hosts are still routed"
 	}
 	return true, msg
 }

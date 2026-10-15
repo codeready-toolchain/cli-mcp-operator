@@ -152,7 +152,7 @@ CEL, in addition to the existing name length of at most 44:
 - `kubernetes` must not set `domains`. `secretName` only on `kubernetes`.
 - `allowlist` requires non-empty `domains` and must not set `secretName`.
 
-When routes are built, a bare host is port 443. IPv6 is `[addr]` or `[addr]:port`; a bare IPv6 string is omitted. A wildcard, a leading-dot suffix, a trailing dot, a URL, or any other string that is not a DNS name or IP is omitted. Ready is false, reason `ProxyRoutesInvalid`, and the message names a few skipped entries, conflicts first. Hosts that remain are still routed. If none remain, the message says the proxy is not running. A host claimed by both a kubernetes target and an allowlist is omitted, because one would inject the investigation token and the other would not. Kubeconfig server URLs must be https.
+When routes are built, a bare host is port 443. IPv6 is `[addr]` or `[addr]:port`; a bare IPv6 string is omitted. A wildcard, a leading-dot suffix, a trailing dot, a URL, or any other string that is not a DNS name or IP is omitted. Ready is false, reason `ProxyRoutesInvalid`, and the message names a few skipped entries, conflicts first. Hosts that remain are still routed, and the message says so. If none remain, the message says the proxy is not running. A host claimed by both a kubernetes target and an allowlist is omitted, because one would inject the investigation token and the other would not. Kubeconfig server URLs must be https.
 
 There is no `spec.proxy.image`, `spec.proxy.replicas`, `spec.proxy.resources`, or secret key field. The key stays `kubeconfig`. The operator computes the effective Secret name and does not write that default back onto the stored spec. Mixing kubernetes and allowlist on one custom resource is that class’s union. The first-party `oc` sample is kubernetes only.
 
@@ -320,7 +320,7 @@ In-cluster (proxy flags set), a kubeconfig Secret is not required to start sessi
 3. Routes ConfigMap applied (dummy key only with kubernetes). Proxy ServiceAccount, Deployment, Service, and NetworkPolicies applied. The sandbox NetworkPolicy includes egress.
 4. Proxy Deployment Available, including the TCP `:8080` probe.
 5. The warm-pool clause is unchanged, and pool pods are not created until the fail-closed gate passes, so the first Ready with `warmPoolSize > 0` also waits on proxy endpoints.
-6. An allowlist entry that is not a host, or a host claimed by both kubernetes and allowlist, is not a route. Ready is false, reason `ProxyRoutesInvalid`, and a conflict is named before unparsable entries. Hosts that remain are still published. If none remain, the proxy is stopped or never started and the message says it is not running. Sessions are not blocked by this condition; they still wait on a ready proxy address.
+6. An allowlist entry that is not a host, or a host claimed by both kubernetes and allowlist, is not a route. Ready is false, reason `ProxyRoutesInvalid`, and a conflict is named before unparsable entries. Hosts that remain are still published, and the message says so. If none remain, the proxy is stopped or never started and the message says it is not running. Sessions are not blocked by this condition; they still wait on a ready proxy address.
 
 HMAC, TLS on generic Kubernetes, MCP Deployment Available, the auth-delegator binding, and the existing child list stay. There is no separate `ProxyReady` condition.
 
