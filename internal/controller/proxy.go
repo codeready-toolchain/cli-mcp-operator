@@ -670,7 +670,9 @@ type routeProblem struct {
 
 // collectProxyRoutes keeps every host that parses to one injector. An entry that
 // is not a host is skipped. The same host with two injectors is skipped. The
-// same host twice with one injector is kept once.
+// same host twice with one injector is kept once. Conflicts are reported before
+// entries that are not hosts, so the Ready message shows the dropped API host
+// ahead of truncated junk.
 func collectProxyRoutes(targets []climcpv1alpha1.ProxyTarget, kubeRoutes []kubeconfig.ProxyRoute) ([]kubeconfig.ProxyRoute, []routeProblem) {
 	routes := make([]kubeconfig.ProxyRoute, 0, len(kubeRoutes))
 	routes = append(routes, kubeRoutes...)
@@ -684,7 +686,7 @@ func collectProxyRoutes(targets []climcpv1alpha1.ProxyTarget, kubeRoutes []kubec
 		problems = append(problems, skipped...)
 	}
 	merged, conflicts := mergeRoutes(routes)
-	return merged, append(problems, conflicts...)
+	return merged, append(conflicts, problems...)
 }
 
 func allowlistRoutes(domains []string) ([]kubeconfig.ProxyRoute, []routeProblem) {

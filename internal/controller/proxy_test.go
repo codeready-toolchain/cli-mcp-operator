@@ -411,7 +411,68 @@ func TestApplyProxyOmitsConflictAndReportsIt(t *testing.T) {
 
 	invalid, msg := r.proxyRoutesInvalid(t.Context(), inst)
 	assert.True(t, invalid)
-	assert.Contains(t, msg, "api.example.com:6443")
-	assert.Contains(t, msg, "*.example.com")
+	assert.NotContains(t, msg, "proxy is not running")
+	conflict := strings.Index(msg, "api.example.com:6443")
+	wild := strings.Index(msg, "*.example.com")
+	require.GreaterOrEqual(t, conflict, 0)
+	require.GreaterOrEqual(t, wild, 0)
+	assert.Less(t, conflict, wild)
 	assert.NotContains(t, msg, "registry.redhat.io")
+}
+
+func TestCollectProxyRoutesListsConflictsBeforeBadDomains(t *testing.T) {
+	t.Parallel()
+	targets := []climcpv1alpha1.ProxyTarget{{
+		Type: climcpv1alpha1.ProxyTargetAllowlist,
+		Domains: []string{
+			"*.a.example",
+			"*.b.example",
+			"*.c.example",
+			"api.example.com:6443",
+		},
+	}}
+	kube := []kubeconfig.ProxyRoute{{
+		Domain:         "api.example.com:6443",
+		Injector:       kubeconfig.InjectorKubernetes,
+		KubeconfigPath: "/etc/kube/config",
+	}}
+	routes, problems := collectProxyRoutes(targets, kube)
+	assert.Empty(t, routes)
+	require.Len(t, problems, 4)
+	assert.Equal(t, "api.example.com:6443", problems[0].entry)
+	assert.Equal(t, "claimed by kubernetes and allowlist", problems[0].reason)
+
+	msg := proxyRouteProblemMessage(problems)
+	assert.Equal(t, `ignored 4 proxy domains: "api.example.com:6443" (claimed by kubernetes and allowlist), "*.a.example" (wildcards are not allowed), "*.b.example" (wildcards are not allowed), and 1 more`, msg)
+	assert.NotContains(t, msg, "*.c.example")
+}
+
+func TestApplyProxyStopsWhenOnlyRouteConflicts(t *testing.T) {
+	t.Parallel()
+	scheme := proxyApplyScheme(t)
+	inst := testInstance("oc", "ns")
+	inst.Spec.Proxy = kubernetesProxySpec()
+	kube := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName("oc"), Namespace: "ns"},
+		Data:       map[string][]byte{kubeconfigDataKey: []byte(tokenKubeconfig)},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inst.DeepCopy(), kube).Build()
+	r := &CliMcpInstanceReconciler{Client: c, Scheme: scheme, Images: testImages()}
+	require.NoError(t, r.applyProxy(t.Context(), inst))
+
+	inst.Spec.Proxy.Targets = []climcpv1alpha1.ProxyTarget{
+		{Type: climcpv1alpha1.ProxyTargetKubernetes},
+		{Type: climcpv1alpha1.ProxyTargetAllowlist, Domains: []string{
+			"*.a.example",
+			"*.b.example",
+			"*.c.example",
+			"api.example.com:6443",
+		}},
+	}
+	require.NoError(t, r.applyProxy(t.Context(), inst))
+	assertProxyQuiesced(t, c)
+
+	invalid, msg := r.proxyRoutesInvalid(t.Context(), inst)
+	assert.True(t, invalid)
+	assert.Equal(t, `proxy is not running; ignored 4 proxy domains: "api.example.com:6443" (claimed by kubernetes and allowlist), "*.a.example" (wildcards are not allowed), "*.b.example" (wildcards are not allowed), and 1 more`, msg)
 }

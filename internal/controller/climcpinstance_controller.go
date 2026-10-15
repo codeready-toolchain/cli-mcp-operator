@@ -410,11 +410,17 @@ func (r *CliMcpInstanceReconciler) proxyRoutesInvalid(ctx context.Context, inst 
 	if err != nil {
 		return true, err.Error()
 	}
-	_, problems := collectProxyRoutes(inst.Spec.Proxy.Targets, kubeRoutes)
+	routes, problems := collectProxyRoutes(inst.Spec.Proxy.Targets, kubeRoutes)
 	if len(problems) == 0 {
 		return false, ""
 	}
-	return true, proxyRouteProblemMessage(problems)
+	msg := proxyRouteProblemMessage(problems)
+	if len(routes) == 0 {
+		// applyProxy already stopped the proxy, or never started it. "Ignored"
+		// alone reads as if the other hosts were still served.
+		msg = "proxy is not running; " + msg
+	}
+	return true, msg
 }
 
 func (r *CliMcpInstanceReconciler) kubernetesProxyRoutes(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) ([]kubeconfig.ProxyRoute, error) {
