@@ -299,6 +299,8 @@ func TestCollectProxyRoutesSkipsBadDomains(t *testing.T) {
 			"example.com:443",
 			"*.example.com",
 			"https://quay.io",
+			"example.com.",
+			"my_host",
 			"registry.redhat.io",
 		},
 	}}
@@ -307,11 +309,15 @@ func TestCollectProxyRoutesSkipsBadDomains(t *testing.T) {
 	assert.Equal(t, "example.com:443", routes[0].Domain)
 	assert.Equal(t, kubeconfig.InjectorNone, routes[0].Injector)
 	assert.Equal(t, "registry.redhat.io:443", routes[1].Domain)
-	require.Len(t, problems, 2)
+	require.Len(t, problems, 4)
 	assert.Equal(t, "*.example.com", problems[0].entry)
 	assert.Contains(t, problems[0].reason, "wildcard")
 	assert.Equal(t, "https://quay.io", problems[1].entry)
 	assert.Contains(t, problems[1].reason, "not a host")
+	assert.Equal(t, "example.com.", problems[2].entry)
+	assert.Contains(t, problems[2].reason, "trailing dot")
+	assert.Equal(t, "my_host", problems[3].entry)
+	assert.Contains(t, problems[3].reason, "not a host")
 
 	none, skipped := collectProxyRoutes([]climcpv1alpha1.ProxyTarget{{
 		Type:    climcpv1alpha1.ProxyTargetAllowlist,
