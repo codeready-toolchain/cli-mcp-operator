@@ -32,7 +32,7 @@ func TestStripAuthHeaders(t *testing.T) {
 	assert.Empty(t, req.Header.Get("Impersonate-Group"))
 	assert.Empty(t, req.Header.Get("Impersonate-Uid"))
 	assert.Empty(t, req.Header.Get("Impersonate-Extra-scopes"))
-	assert.Equal(t, "goog-key", req.Header.Get("X-Goog-Api-Key"))
+	assert.Empty(t, req.Header.Get("X-Goog-Api-Key"))
 	assert.Equal(t, "evil", req.Header.Get("Via"))
 	assert.Equal(t, "1.2.3.4", req.Header.Get("X-Forwarded-For"))
 }
