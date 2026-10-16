@@ -87,7 +87,7 @@ func TestKubernetesStripInjectAndDenylist(t *testing.T) {
 	require.Len(t, seen.snapshot(), 2)
 	got := seen.snapshot()[0]
 	assert.Equal(t, "Bearer "+investigation, got.Get("Authorization"))
-	assert.Equal(t, "goog-key", got.Get("X-Goog-Api-Key"))
+	assert.Empty(t, got.Get("X-Goog-Api-Key"))
 	assert.Empty(t, got.Get("X-Api-Key"))
 	assert.Empty(t, got.Get("Proxy-Authorization"))
 	assert.Empty(t, got.Get("Impersonate-User"))
@@ -116,7 +116,7 @@ func TestNoneStripsWithoutDenylist(t *testing.T) {
 	got := seen.snapshot()[0]
 	assert.Empty(t, got.Get("Authorization"))
 	assert.Empty(t, got.Get("Impersonate-User"))
-	assert.Equal(t, "goog-key", got.Get("X-Goog-Api-Key"))
+	assert.Empty(t, got.Get("X-Goog-Api-Key"))
 }
 
 func TestNoneMITMUsesProxyCA(t *testing.T) {
