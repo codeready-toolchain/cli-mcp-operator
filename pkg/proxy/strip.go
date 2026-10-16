@@ -7,10 +7,11 @@ import (
 	"strings"
 )
 
-// authHeaders are removed before injection. X-Goog-Api-Key is not one of them.
+// authHeaders are removed before injection, including on allowlist routes.
 var authHeaders = []string{
 	"Authorization",
 	"X-Api-Key",
+	"X-Goog-Api-Key",
 	"Proxy-Authorization",
 	"Impersonate-User",
 	"Impersonate-Group",
