@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 )
@@ -29,6 +30,19 @@ func stripAuthHeaders(req *http.Request) {
 }
 
 func kubePathDenied(urlPath string) bool {
+	if deniedKubePath(urlPath) {
+		return true
+	}
+	// One decode. A still-encoded segment such as %65xec is not the subresource
+	// name until it is unescaped. A second encoding stays encoded and is not denied.
+	unescaped, err := url.PathUnescape(urlPath)
+	if err != nil || unescaped == urlPath {
+		return false
+	}
+	return deniedKubePath(unescaped)
+}
+
+func deniedKubePath(urlPath string) bool {
 	clean := path.Clean("/" + strings.TrimPrefix(urlPath, "/"))
 	if clean == "/" || clean == "." {
 		return false
@@ -38,7 +52,7 @@ func kubePathDenied(urlPath string) bool {
 		return true
 	}
 	switch subresource {
-	case "exec", "attach", "portforward", "proxy":
+	case "exec", "attach", "portforward", "proxy", "ephemeralcontainers":
 		return true
 	default:
 		return false

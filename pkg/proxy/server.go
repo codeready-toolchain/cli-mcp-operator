@@ -147,7 +147,7 @@ func (t *routeTable) handle(req *http.Request, logger *slog.Logger) (*http.Reque
 		return req, textResponse(req, http.StatusForbidden, "domain not allowed")
 	}
 	stripAuthHeaders(req)
-	if route.Injector == kubeconfig.InjectorKubernetes && kubePathDenied(req.URL.Path) {
+	if route.Injector == kubeconfig.InjectorKubernetes && kubePathDenied(req.URL.EscapedPath()) {
 		logger.Warn("blocked kube path", "host", route.Domain, "path", req.URL.Path)
 		return req, textResponse(req, http.StatusForbidden, "path not allowed")
 	}
