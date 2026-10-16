@@ -244,13 +244,24 @@ spec:
           resources:
           - pods
           - secrets
+          verbs:
+          - create
+          - delete
+          - deletecollection
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - ""
+          resources:
           - services
           - serviceaccounts
           - configmaps
           verbs:
           - create
           - delete
-          - deletecollection
           - get
           - list
           - patch

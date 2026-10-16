@@ -369,6 +369,9 @@ func TestNamespacedRoleHasChildResources(t *testing.T) {
 			assert.Contains(t, rule.Verbs, "create")
 			assert.Contains(t, rule.Verbs, "deletecollection")
 		}
+		if slices.Contains(rule.Resources, "services") {
+			assert.NotContains(t, rule.Verbs, "deletecollection")
+		}
 	}
 	for _, want := range []string{
 		"pods", "secrets", "services", "serviceaccounts", "configmaps",
