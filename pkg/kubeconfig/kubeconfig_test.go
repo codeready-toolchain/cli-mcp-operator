@@ -346,6 +346,34 @@ func TestValidateRejects(t *testing.T) {
 			},
 			wantErr: "wildcards",
 		},
+		{
+			name: "trailing dot server",
+			mutate: func(cfg *clientcmdapi.Config) {
+				cfg.Clusters["c1"].Server = "https://example.com."
+			},
+			wantErr: "trailing dot",
+		},
+		{
+			name: "underscore server",
+			mutate: func(cfg *clientcmdapi.Config) {
+				cfg.Clusters["c1"].Server = "https://my_host"
+			},
+			wantErr: "not a host",
+		},
+		{
+			name: "empty label server",
+			mutate: func(cfg *clientcmdapi.Config) {
+				cfg.Clusters["c1"].Server = "https://example..com"
+			},
+			wantErr: "not a host",
+		},
+		{
+			name: "userinfo server",
+			mutate: func(cfg *clientcmdapi.Config) {
+				cfg.Clusters["c1"].Server = "https://user:pass@api.example.com:6443"
+			},
+			wantErr: "userinfo",
+		},
 	}
 
 	for _, tt := range tests {
