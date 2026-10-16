@@ -367,6 +367,7 @@ func TestNamespacedRoleHasChildResources(t *testing.T) {
 		resources = append(resources, rule.Resources...)
 		if slices.Contains(rule.Resources, "pods") {
 			assert.Contains(t, rule.Verbs, "create")
+			assert.Contains(t, rule.Verbs, "deletecollection")
 		}
 	}
 	for _, want := range []string{
@@ -378,7 +379,7 @@ func TestNamespacedRoleHasChildResources(t *testing.T) {
 	for _, rule := range role.Rules {
 		if slices.Contains(rule.Resources, "endpointslices") {
 			assert.Equal(t, []string{"discovery.k8s.io"}, rule.APIGroups)
-			assert.Equal(t, []string{"list"}, rule.Verbs)
+			assert.Equal(t, []string{"list", "watch"}, rule.Verbs)
 			assert.Empty(t, rule.ResourceNames)
 		}
 	}

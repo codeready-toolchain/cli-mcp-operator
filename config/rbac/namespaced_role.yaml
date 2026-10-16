@@ -1,6 +1,10 @@
 # Namespaced manager verbs for instance children and the secret trust boundary.
 # Do not add these rules to ClusterRole manager-role.
 #
+# deletecollection is required: deleting an instance uses DeleteAllOf on pods
+# and secrets. watch on endpointslices is required: the manager cache lists
+# them through an informer.
+#
 # OLM creates CSV `permissions` as a Role in the operator namespace, then copies
 # that Role/RoleBinding into OperatorGroup targetNamespaces (SingleNamespace).
 # make deploy applies this Role in the operator namespace (OwnNamespace).
@@ -25,6 +29,7 @@ rules:
   verbs:
   - create
   - delete
+  - deletecollection
   - get
   - list
   - patch
@@ -61,6 +66,7 @@ rules:
   - endpointslices
   verbs:
   - list
+  - watch
 - apiGroups:
   - networking.k8s.io
   resources:
