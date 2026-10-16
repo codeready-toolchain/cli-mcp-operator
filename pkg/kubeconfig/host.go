@@ -34,7 +34,9 @@ func CanonicalHostPort(hostport string) (string, error) {
 }
 
 // HostPortFromServerURL extracts host:port from an https kubeconfig server URL.
-// A missing port defaults to 443. Any other scheme is rejected.
+// A missing port defaults to 443. Any other scheme is rejected. The host must
+// be an IP or a DNS name, the same rule as an allowlist domain. Userinfo is
+// rejected so a URL user is not dropped and then treated as a route.
 func HostPortFromServerURL(server string) (string, error) {
 	u, err := url.Parse(server)
 	if err != nil {
@@ -42,6 +44,9 @@ func HostPortFromServerURL(server string) (string, error) {
 	}
 	if u.Scheme != "https" {
 		return "", fmt.Errorf("server URL %q must use https", server)
+	}
+	if u.User != nil {
+		return "", fmt.Errorf("server URL %q: userinfo is not allowed", server)
 	}
 	host := u.Hostname()
 	if host == "" {
@@ -53,6 +58,13 @@ func HostPortFromServerURL(server string) (string, error) {
 	}
 	hp, err := CanonicalHostPort(net.JoinHostPort(host, port))
 	if err != nil {
+		return "", fmt.Errorf("server URL %q: %w", server, err)
+	}
+	canonicalHost, _, err := net.SplitHostPort(hp)
+	if err != nil {
+		return "", fmt.Errorf("server URL %q: %w", server, err)
+	}
+	if err := validateAllowlistHost(canonicalHost, canonicalHost); err != nil {
 		return "", fmt.Errorf("server URL %q: %w", server, err)
 	}
 	return hp, nil
