@@ -244,6 +244,18 @@ spec:
           resources:
           - pods
           - secrets
+          verbs:
+          - create
+          - delete
+          - deletecollection
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - ""
+          resources:
           - services
           - serviceaccounts
           - configmaps
@@ -286,6 +298,7 @@ spec:
           - endpointslices
           verbs:
           - list
+          - watch
         - apiGroups:
           - networking.k8s.io
           resources:
