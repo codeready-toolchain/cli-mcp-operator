@@ -102,7 +102,7 @@ The proxy, on every CONNECT and every proxied request:
 - allows only exact `host:port` values from this instance’s targets (kubeconfig `server` URLs, and allowlist domains with bare hosts treated as `:443`)
 - intercepts TLS with its own CA
 - strips `Authorization`, API-key, and impersonation headers
-- on kubernetes routes, injects the investigation bearer for that host and rejects the `exec`, `attach`, `portforward`, and `proxy` subresources (path cleaned, query ignored). A resource or namespace named exec is allowed. Watch of those subresources is rejected.
+- on kubernetes routes, injects the investigation bearer for that host and rejects the `exec`, `attach`, `portforward`, `proxy`, and `ephemeralcontainers` subresources (path cleaned, query ignored, and one percent-decoding). A resource or namespace named exec is allowed. Watch of those subresources is rejected.
 - on allowlist routes, injects nothing
 
 `oc --token`, a leaked kubeconfig, and `curl -H Authorization` still authenticate as the investigation identity if they go through the proxy. Upstream TLS is verified. When the kubeconfig carries a cluster CA, the proxy trusts only that CA for that host.
