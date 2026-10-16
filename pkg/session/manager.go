@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,12 @@ const (
 	readyTimeout    = 60 * time.Second
 	proxyGateTTL    = 5 * time.Second
 	proxyGateFlight = "ready"
+
+	// A sibling replica can discover a claimed pod after the session label is
+	// set and before POST /assign finishes. Wait out that window instead of
+	// returning the agent's 503.
+	agentNotAssignedWait = 5 * time.Second
+	agentNotAssignedPoll = 100 * time.Millisecond
 )
 
 var sessionIDRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -49,6 +56,8 @@ type SessionManager struct {
 	cache        *PodCache
 	pool         *WarmPool
 	agentClient  *agent.AgentClient
+	assignWait   time.Duration
+	assignPoll   time.Duration
 	logger       *slog.Logger
 	proxyGate    proxyGateCache
 	proxyGateTTL time.Duration
@@ -100,6 +109,8 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 		),
 		logger:       logger,
 		proxyGateTTL: proxyGateTTL,
+		assignWait:   agentNotAssignedWait,
+		assignPoll:   agentNotAssignedPoll,
 	}
 	return mgr, nil
 }
@@ -576,7 +587,7 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 	token := computeToken(m.config.HMACKey, sessionID)
 	// Capture podName before Execute: cache TTL can expire during long-running commands.
 	_, podName, _ := m.cache.Get(sessionID)
-	execResp, err := m.agentClient.Execute(ctx, podIP, token, agent.ExecRequest{
+	execResp, err := m.executeWhenAssigned(ctx, podIP, token, agent.ExecRequest{
 		Command: command,
 		Timeout: timeoutSec,
 	})
@@ -595,6 +606,37 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 	}
 
 	return execResp, nil
+}
+
+// executeWhenAssigned retries only the 503 the agent returns before /assign.
+// Any other status, including a later 503, is returned immediately.
+func (m *SessionManager) executeWhenAssigned(ctx context.Context, podIP, token string, req agent.ExecRequest) (*agent.ExecResponse, error) {
+	wait := cmp.Or(m.assignWait, agentNotAssignedWait)
+	poll := cmp.Or(m.assignPoll, agentNotAssignedPoll)
+	deadline := time.Now().Add(wait)
+	var execResp *agent.ExecResponse
+	var err error
+	for {
+		execResp, err = m.agentClient.Execute(ctx, podIP, token, req)
+		if err == nil || !agentNotAssigned(err) || !time.Now().Before(deadline) {
+			return execResp, err
+		}
+		timer := time.NewTimer(poll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func agentNotAssigned(err error) bool {
+	var statusErr *agent.StatusError
+	if !errors.As(err, &statusErr) {
+		return false
+	}
+	return statusErr.StatusCode == http.StatusServiceUnavailable && strings.Contains(statusErr.Body, "agent not assigned")
 }
 
 func (m *SessionManager) updateLastActivity(ctx context.Context, podName string) {

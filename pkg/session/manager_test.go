@@ -1116,3 +1116,119 @@ func TestLookupProxyReadyIgnoresOtherServices(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no ready endpoint addresses")
 }
+
+func TestExecuteCommandWaitsForAssignment(t *testing.T) {
+	t.Run("retries until the agent is assigned", func(t *testing.T) {
+		var calls atomic.Int32
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if calls.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"agent not assigned"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agent.ExecResponse{Stdout: "ok", ExitCode: 0})
+		}))
+		t.Cleanup(ts.Close)
+
+		mgr := newTestManager(t)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.assignPoll = 10 * time.Millisecond
+		mgr.cache.Set("inv-wait", "127.0.0.1", "pod-wait")
+
+		resp, err := mgr.ExecuteCommand(context.Background(), "inv-wait", "echo ok", 30)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", resp.Stdout)
+		assert.GreaterOrEqual(t, calls.Load(), int32(2))
+	})
+
+	t.Run("returns the 503 when the agent stays unassigned", func(t *testing.T) {
+		var calls atomic.Int32
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"agent not assigned"}`))
+		}))
+		t.Cleanup(ts.Close)
+
+		mgr := newTestManager(t)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.assignWait = 200 * time.Millisecond
+		mgr.assignPoll = 40 * time.Millisecond
+		mgr.cache.Set("inv-stay", "127.0.0.1", "pod-stay")
+
+		start := time.Now()
+		_, err := mgr.ExecuteCommand(context.Background(), "inv-stay", "echo ok", 30)
+		require.Error(t, err)
+		var statusErr *agent.StatusError
+		require.ErrorAs(t, err, &statusErr)
+		assert.Equal(t, http.StatusServiceUnavailable, statusErr.StatusCode)
+		assert.Contains(t, statusErr.Body, "agent not assigned")
+		assert.GreaterOrEqual(t, calls.Load(), int32(2))
+		assert.Less(t, time.Since(start), time.Second)
+		_, _, ok := mgr.cache.Get("inv-stay")
+		assert.True(t, ok, "a 503 is not a transport failure")
+	})
+
+	t.Run("does not retry a different 503", func(t *testing.T) {
+		var calls atomic.Int32
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"something else"}`))
+		}))
+		t.Cleanup(ts.Close)
+
+		mgr := newTestManager(t)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.assignWait = 2 * time.Second
+		mgr.cache.Set("inv-other", "127.0.0.1", "pod-other")
+
+		_, err := mgr.ExecuteCommand(context.Background(), "inv-other", "echo ok", 30)
+		require.Error(t, err)
+		assert.Equal(t, int32(1), calls.Load())
+	})
+
+	t.Run("stops waiting when the request is canceled", func(t *testing.T) {
+		started := make(chan struct{})
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"agent not assigned"}`))
+		}))
+		t.Cleanup(ts.Close)
+
+		mgr := newTestManager(t)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.assignPoll = time.Second
+		mgr.cache.Set("inv-cancel", "127.0.0.1", "pod-cancel")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := mgr.ExecuteCommand(ctx, "inv-cancel", "echo ok", 30)
+			errCh <- err
+		}()
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("exec request did not start")
+		}
+		cancel()
+		select {
+		case err := <-errCh:
+			require.Error(t, err)
+			assert.ErrorIs(t, err, context.Canceled)
+		case <-time.After(time.Second):
+			t.Fatal("exec did not return after cancel")
+		}
+	})
+}
