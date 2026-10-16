@@ -1226,7 +1226,7 @@ func TestExecuteCommandWaitsForAssignment(t *testing.T) {
 		select {
 		case err := <-errCh:
 			require.Error(t, err)
-			assert.ErrorIs(t, err, context.Canceled)
+			require.ErrorIs(t, err, context.Canceled)
 		case <-time.After(time.Second):
 			t.Fatal("exec did not return after cancel")
 		}
