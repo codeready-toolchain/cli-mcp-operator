@@ -215,6 +215,31 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 	t.Cleanup(func() { _ = deniedResp.Body.Close() })
 	assert.Equal(t, http.StatusForbidden, deniedResp.StatusCode)
 	assert.Len(t, seen.snapshot(), 1)
+	_, err = io.ReadAll(deniedResp.Body)
+	require.NoError(t, err)
+
+	onceEncoded, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+host+"/api/v1/namespaces/ns/pods/p/%65xec", nil)
+	require.NoError(t, err)
+	require.NoError(t, onceEncoded.Write(tlsConn))
+	onceEncodedResp, err := http.ReadResponse(bufio.NewReader(tlsConn), onceEncoded)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = onceEncodedResp.Body.Close() })
+	assert.Equal(t, http.StatusForbidden, onceEncodedResp.StatusCode)
+	assert.Len(t, seen.snapshot(), 1)
+	_, err = io.ReadAll(onceEncodedResp.Body)
+	require.NoError(t, err)
+
+	twiceEncoded, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+host+"/api/v1/namespaces/ns/pods/p/%2565xec", nil)
+	require.NoError(t, err)
+	require.NoError(t, twiceEncoded.Write(tlsConn))
+	twiceEncodedResp, err := http.ReadResponse(bufio.NewReader(tlsConn), twiceEncoded)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = twiceEncodedResp.Body.Close() })
+	assert.Equal(t, http.StatusAccepted, twiceEncodedResp.StatusCode)
+	assert.Equal(t, []string{
+		"/api/v1/namespaces/ns/pods/p/log",
+		"/api/v1/namespaces/ns/pods/p/%2565xec",
+	}, seen.requestURIs())
 
 	t.Run("different CA sends nothing", func(t *testing.T) {
 		otherCA, _, _, _ := generateCA(t, elliptic.P256())
@@ -235,7 +260,7 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 			t.Cleanup(func() { _ = resp.Body.Close() })
 			assert.NotEqual(t, http.StatusAccepted, resp.StatusCode)
 		}
-		assert.Len(t, seen.snapshot(), 1)
+		assert.Len(t, seen.snapshot(), 2)
 	})
 
 	t.Run("omitted CA sends nothing", func(t *testing.T) {
@@ -256,7 +281,7 @@ func TestKubernetesMITMVerifiesRouteCA(t *testing.T) {
 			t.Cleanup(func() { _ = resp.Body.Close() })
 			assert.NotEqual(t, http.StatusAccepted, resp.StatusCode)
 		}
-		assert.Len(t, seen.snapshot(), 1)
+		assert.Len(t, seen.snapshot(), 2)
 	})
 }
 
@@ -620,12 +645,14 @@ func tlsClient(t *testing.T, conn net.Conn, ca *x509.Certificate) *tls.Conn {
 type headerLog struct {
 	mu      sync.Mutex
 	headers []http.Header
+	uris    []string
 }
 
 func (h *headerLog) record(r *http.Request) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.headers = append(h.headers, r.Header.Clone())
+	h.uris = append(h.uris, r.RequestURI)
 }
 
 func (h *headerLog) snapshot() []http.Header {
@@ -633,5 +660,13 @@ func (h *headerLog) snapshot() []http.Header {
 	defer h.mu.Unlock()
 	out := make([]http.Header, len(h.headers))
 	copy(out, h.headers)
+	return out
+}
+
+func (h *headerLog) requestURIs() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, len(h.uris))
+	copy(out, h.uris)
 	return out
 }
