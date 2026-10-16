@@ -39,6 +39,7 @@ const (
 	instanceAllow     = "curlinst"
 	instanceBad       = "bad"
 	strayPodName      = "cli-mcp-e2e-stray"
+	e2eSessionSecret  = "cli-mcp-e2e-oc-session"
 	proxyManagedToken = "proxy-managed-token"
 )
 
@@ -227,6 +228,35 @@ func registerInstanceTests() {
 		Expect(body).To(ContainSubstring("403"))
 		Expect(body).To(ContainSubstring("domain not allowed"))
 	})
+
+	// Keep this last. It deletes the shared kubernetes instance the earlier specs exec into.
+	It("deletes a ready instance and its sandbox pods and session secrets", func() {
+		By("confirming the warm pool left a sandbox pod")
+		Expect(sandboxResourceNames("pods", instanceOC)).NotTo(BeEmpty())
+
+		// Assigned-session secrets have no owner reference, so garbage collection
+		// cannot remove this one. The finalizer has to DeleteAllOf it.
+		By("creating a session secret with no owner reference")
+		applyManifest(sessionSecretManifest(instanceOC, e2eSessionSecret))
+		Expect(sandboxResourceNames("secrets", instanceOC)).To(ContainElement(e2eSessionSecret))
+
+		By("deleting the instance")
+		out, err := kubectl("delete", "climcpinstance", instanceOC, "-n", namespace, "--timeout=3m")
+		Expect(err).NotTo(HaveOccurred(), out)
+
+		By("confirming the instance, sandbox pods, and session secrets are gone")
+		out, err = kubectl("get", "climcpinstance", instanceOC, "-n", namespace)
+		Expect(err).To(HaveOccurred())
+		Expect(out).To(ContainSubstring("not found"))
+		Expect(sandboxResourceNames("pods", instanceOC)).To(BeEmpty())
+		Expect(sandboxResourceNames("secrets", instanceOC)).To(BeEmpty())
+
+		By("leaving the allowlist instance running")
+		status, err := instanceCondition(instanceAllow, "status")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(status).To(Equal("True"))
+		Expect(sandboxResourceNames("pods", instanceAllow)).NotTo(BeEmpty())
+	})
 }
 
 const (
@@ -347,6 +377,21 @@ metadata:
   name: %s
   namespace: %s
 spec:%s`, name, namespace, spec)
+}
+
+func sessionSecretManifest(instance, name string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Secret
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    cli-mcp.redhat.com/instance: %s
+    cli-mcp.redhat.com/component: sandbox
+    cli-mcp.redhat.com/session-id: e2e-delete
+stringData:
+  token: e2e
+`, name, namespace, instance)
 }
 
 func strayPodManifest() string {
@@ -524,12 +569,17 @@ func instanceCondition(name, field string) (string, error) {
 }
 
 func sandboxPodName(instance string) string {
-	out, err := kubectl("get", "pods", "-n", namespace,
+	names := sandboxResourceNames("pods", instance)
+	Expect(names).NotTo(BeEmpty())
+	return names[0]
+}
+
+func sandboxResourceNames(kind, instance string) []string {
+	out, err := kubectl("get", kind, "-n", namespace,
 		"-l", "cli-mcp.redhat.com/instance="+instance+",cli-mcp.redhat.com/component=sandbox",
-		"-o", "jsonpath={.items[0].metadata.name}")
+		"-o", "jsonpath={.items[*].metadata.name}")
 	Expect(err).NotTo(HaveOccurred(), out)
-	Expect(out).NotTo(BeEmpty())
-	return out
+	return strings.Fields(out)
 }
 
 func kubectl(args ...string) (string, error) {
