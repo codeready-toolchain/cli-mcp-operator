@@ -134,10 +134,13 @@ type SandboxSpec struct {
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
-	// Env overlay for sandbox pods, including valueFrom. Operator-owned
-	// names (KUBECONFIG, HOME, SANDBOX_AUTH_TOKEN) are ignored by the builder.
-	// Extra Secrets referenced here are not Ready gates.
+	// Env is an overlay for sandbox pods. Entries may set a literal value, or
+	// valueFrom.fieldRef and valueFrom.resourceFieldRef. secretKeyRef and
+	// configMapKeyRef are rejected so a sandbox cannot project namespace
+	// Secrets or ConfigMaps. Operator-owned names (KUBECONFIG, HOME,
+	// SANDBOX_AUTH_TOKEN, and the proxy variables) are ignored by the builder.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self.all(e, !has(e.valueFrom) || (!has(e.valueFrom.secretKeyRef) && !has(e.valueFrom.configMapKeyRef)))",message="spec.sandbox.env must not use secretKeyRef or configMapKeyRef"
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
 	// ImagePullPolicy for sandbox pods.

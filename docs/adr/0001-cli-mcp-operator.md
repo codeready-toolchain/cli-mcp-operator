@@ -138,7 +138,7 @@ The client objects are `cli-mcp-<name>-client`. They do not reuse the MCP Role, 
 
 Session pods and per-session auth Secrets are not children. The MCP server creates and claims them. The operator keeps the unassigned count equal to `warmPoolSize`: create on deficit, delete surplus immediately (oldest first; re-get and skip a pod that just gained `session-id`). It recreates unassigned pods when the desired sandbox spec changes, not on a timer. It does not age-drain unassigned pods.
 
-The operator does not create the CRD, the operator Deployment, the investigation kubeconfig Secret, the TLS Secret on non-OpenShift, OpenShift SCCs, or extra Secrets referenced from `spec.sandbox.env`. It does own ClusterRoleBinding `cli-mcp-auth-delegator` and the per-instance client ServiceAccount and Role.
+The operator does not create the CRD, the operator Deployment, the investigation kubeconfig Secret, the TLS Secret on non-OpenShift, or OpenShift SCCs. It does own ClusterRoleBinding `cli-mcp-auth-delegator` and the per-instance client ServiceAccount and Role.
 
 All operator-owned namespaced objects get an owner reference to the custom resource and instance labels. Pool pods the operator creates get an owner reference. MCP on-demand session pods do not. The auth-delegator binding does not get an instance owner reference. The admin kubeconfig and TLS Secrets do not get an owner reference.
 
@@ -233,7 +233,7 @@ The operator renders Deployment args and env from the custom resource. The MCP b
 | Kubeconfig Secret name | In-cluster with the proxy: not passed. The real Secret is not a sandbox mount ([ADR-0002](0002-credential-proxy.md)). Local/dev without proxy flags may still mount it. |
 | Sandbox ServiceAccount | `cli-mcp-<name>-sandbox`. Required. |
 | Sandbox CPU and memory | `spec.sandbox.resources`. Empty means `100m` / `500m` / `128Mi` / `512Mi`. |
-| Image pull policy and env | `spec.sandbox`. Env is a list of env vars, including `valueFrom`. |
+| Image pull policy and env | `spec.sandbox`. Env entries may set a literal value, `fieldRef`, or `resourceFieldRef`. `secretKeyRef` and `configMapKeyRef` are rejected. |
 
 The MCP process kubeconfig flag is the process’s own client config (empty means in-cluster). It is not the investigation Secret.
 
@@ -275,7 +275,7 @@ One custom resource is one sandbox class plus one MCP Deployment. `spec.replicas
 
 Operator-owned on every sandbox pod: dedicated ServiceAccount, `automountServiceAccountToken: false`, instance and component labels, agent port :8090, `runAsNonRoot`, `seccompProfile: RuntimeDefault`, drop all capabilities, `allowPrivilegeEscalation: false`, and one readiness probe. An HTTP probe from the node would miss the ingress policy. The kubeconfig volume is the dummy ConfigMap when a kubernetes target exists ([ADR-0002](0002-credential-proxy.md)). The session token env is set only when the pod is assigned.
 
-User-mergeable fields on `spec.sandbox`: `image`, `resources`, `env` (including `valueFrom`), `imagePullPolicy`. Empty image means `RELATED_IMAGE_SANDBOX`. Empty resources mean the default requests and limits. Extra Secrets in `valueFrom` are admin-owned and are not Ready gates.
+User-mergeable fields on `spec.sandbox`: `image`, `resources`, `env`, `imagePullPolicy`. Empty image means `RELATED_IMAGE_SANDBOX`. Empty resources mean the default requests and limits. `spec.sandbox.env` may set a literal value, `fieldRef`, or `resourceFieldRef`. A CEL rule on the CRD rejects `secretKeyRef` and `configMapKeyRef`.
 
 ```yaml
 apiVersion: cli-mcp.redhat.com/v1alpha1
@@ -310,7 +310,7 @@ status:
 
 `Ready` requires all of the following.
 
-1. **Required Secrets exist with non-empty keys.** HMAC Secret data `key`. On generic Kubernetes, TLS Secret data `tls.crt` and `tls.key`. Missing object is `SecretsNotFound`. Missing or empty required key is `SecretKeysInvalid`. Generate-once does not fill an existing Secret that has an empty key. Extra Secrets referenced only from `spec.sandbox.env` are not this check. When a kubernetes target exists, [ADR-0002](0002-credential-proxy.md) also parses the effective kubeconfig (`KubeconfigInvalid` on failure). An allowlist-only instance does not require the kubeconfig Secret.
+1. **Required Secrets exist with non-empty keys.** HMAC Secret data `key`. On generic Kubernetes, TLS Secret data `tls.crt` and `tls.key`. Missing object is `SecretsNotFound`. Missing or empty required key is `SecretKeysInvalid`. Generate-once does not fill an existing Secret that has an empty key. When a kubernetes target exists, [ADR-0002](0002-credential-proxy.md) also parses the effective kubeconfig (`KubeconfigInvalid` on failure). An allowlist-only instance does not require the kubeconfig Secret.
 2. **Every operator-managed namespaced child matches spec,** including the client ServiceAccount, Role, and RoleBinding, and the kube-rbac-proxy ConfigMap mounted with its resourceVersion stamped on the pod template. ClusterRoleBinding `cli-mcp-auth-delegator` exists with `roleRef` `system:auth-delegator` and includes this instance’s MCP ServiceAccount while the instance is not deleting. Apply failure or a foreign `roleRef` is `ChildrenNotReady`. `status.clientServiceAccount` is always published. No client token Secret is a Ready gate. Proxy children from [ADR-0002](0002-credential-proxy.md) fold into this same list.
 3. **The MCP Deployment is Available,** including the kube-rbac-proxy sidecar.
 4. **Warm pool, if `warmPoolSize > 0`.** The first Ready, a pool-size increase, and an unassigned overlay rebuild wait until `warmPoolReady` meets `warmPoolDesired`. After that, a claim does not clear Ready unless a pool pod is Failed, ErrImagePull, ImagePullBackOff, or CrashLoopBackOff, or the shortfall lasts past 5 minutes. Decreasing `warmPoolSize` does not wait. `warmPoolReady` and `warmPoolDesired` are always published. Optional condition `WarmPoolReady` is the strict count and may flap; aggregate `Ready` does not flap on claim. `warmPoolSize: 0` skips this clause. Pool pods are not created until the proxy gate in [ADR-0002](0002-credential-proxy.md) passes.
