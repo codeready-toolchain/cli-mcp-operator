@@ -692,7 +692,43 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		}).Should(Succeed())
 	})
 
-	It("does not gate Ready on extra spec.sandbox.env Secrets", func() {
+	It("rejects secretKeyRef and configMapKeyRef on spec.sandbox.env", func() {
+		for _, env := range []corev1.EnvVar{
+			{
+				Name: "LEAKED_KUBECONFIG",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "cli-mcp-oc-kubeconfig"},
+						Key:                  "kubeconfig",
+					},
+				},
+			},
+			{
+				Name: "LEAKED_CONFIG",
+				ValueFrom: &corev1.EnvVarSource{
+					ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "app-config"},
+						Key:                  "region",
+					},
+				},
+			},
+		} {
+			inst := &climcpv1alpha1.CliMcpInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
+				Spec: climcpv1alpha1.CliMcpInstanceSpec{
+					Proxy: kubernetesProxySpec(),
+					Sandbox: climcpv1alpha1.SandboxSpec{
+						Env: []corev1.EnvVar{env},
+					},
+				},
+			}
+			err := k8sClient.Create(ctx, inst)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("secretKeyRef or configMapKeyRef"))
+		}
+	})
+
+	It("reaches Ready with literal env and fieldRef", func() {
 		createAdminSecrets(ctx, ns.Name)
 		inst := &climcpv1alpha1.CliMcpInstance{
 			ObjectMeta: metav1.ObjectMeta{Name: nn.Name, Namespace: nn.Namespace},
@@ -702,21 +738,26 @@ var _ = Describe("CliMcpInstance Controller", func() {
 				Sandbox: climcpv1alpha1.SandboxSpec{
 					IdleTimeout:  metav1.Duration{Duration: 30 * time.Minute},
 					WarmPoolSize: 0,
-					Env: []corev1.EnvVar{{
-						Name: "AWS_REGION",
-						ValueFrom: &corev1.EnvVarSource{
-							SecretKeyRef: &corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{Name: "aws-cli-creds"},
-								Key:                  "region",
+					Env: []corev1.EnvVar{
+						{Name: "AWS_REGION", Value: "us-east-1"},
+						{
+							Name: "POD_NAMESPACE",
+							ValueFrom: &corev1.EnvVarSource{
+								FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
 							},
 						},
-					}},
+					},
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, inst)).To(Succeed())
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		Expect(err).NotTo(HaveOccurred())
+
+		deploy := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: childName("oc"), Namespace: ns.Name}, deploy)).To(Succeed())
+		Expect(deploy.Spec.Template.Spec.Containers[0].Args).To(ContainElement(ContainSubstring(`"name":"AWS_REGION"`)))
+		Expect(deploy.Spec.Template.Spec.Containers[0].Args).To(ContainElement(ContainSubstring(`"fieldPath":"metadata.namespace"`)))
 
 		Eventually(func(g Gomega) {
 			markInstanceDeploymentsAvailable(ctx, ns.Name)
