@@ -1238,6 +1238,57 @@ func TestExecuteCommandWaitsForAssignment(t *testing.T) {
 		assert.True(t, assigned.Load())
 	})
 
+	t.Run("does not recover again when the retry exec fails", func(t *testing.T) {
+		var assigned atomic.Bool
+		var assignCalls atomic.Int32
+		var execAfterAssign atomic.Int32
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/assign" {
+				assignCalls.Add(1)
+				assigned.Store(true)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			if !assigned.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"agent not assigned"}`))
+				return
+			}
+			if execAfterAssign.Add(1) == 1 {
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					http.Error(w, "no hijack", http.StatusInternalServerError)
+					return
+				}
+				conn, _, err := hj.Hijack()
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agent.ExecResponse{Stdout: "unexpected", ExitCode: 0})
+		}))
+		t.Cleanup(ts.Close)
+
+		pod := readyPod("inv-netretry", "127.0.0.1", time.Now().UTC())
+		mgr := newTestManager(t, pod)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.assignWait = 30 * time.Millisecond
+		mgr.assignPoll = 5 * time.Millisecond
+		mgr.cache.Set("inv-netretry", "127.0.0.1", pod.Name)
+
+		_, err := mgr.ExecuteCommand(context.Background(), "inv-netretry", "echo ok", 30)
+		require.Error(t, err)
+		assert.Equal(t, int32(1), assignCalls.Load())
+		assert.Equal(t, int32(1), execAfterAssign.Load())
+		_, cachedName, ok := mgr.cache.Get("inv-netretry")
+		assert.True(t, ok)
+		assert.Equal(t, pod.Name, cachedName)
+	})
+
 	t.Run("does not mark a reset when assign returns already assigned", func(t *testing.T) {
 		var assigned atomic.Bool
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

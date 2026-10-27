@@ -692,11 +692,10 @@ func (m *SessionManager) recoverSession(ctx context.Context, sessionID, podIP, p
 	if agentNotAssigned(cause) && podIP != "" {
 		assignedByUs, assignErr := m.reassign(ctx, podIP, token)
 		if assignErr == nil {
+			// One recovery exec. A failure, including a network error, is
+			// returned. The next call retries. Do not start a second recovery.
 			resp, execErr := m.agentClient.Execute(ctx, podIP, token, req)
 			if execErr != nil {
-				if isNetwork(execErr) {
-					return m.recoverOnNewPod(ctx, sessionID, podIP, podName, token, req)
-				}
 				return nil, execErr
 			}
 			if assignedByUs {
