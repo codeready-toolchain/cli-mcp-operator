@@ -827,25 +827,30 @@ func TestExecuteCommand(t *testing.T) {
 		assert.Equal(t, expectedToken, receivedToken)
 	})
 
-	t.Run("transport failure invalidates cache", func(t *testing.T) {
+	t.Run("transport failure keeps the cache while the pod exists", func(t *testing.T) {
 		// given — cache points at localhost; AgentPort has nothing listening
 		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 		require.NoError(t, err)
 		closedPort := ln.Addr().(*net.TCPAddr).Port
 		require.NoError(t, ln.Close())
 
-		mgr := newTestManager(t)
+		pod := readyPod("inv-transport", "127.0.0.1", time.Now().UTC())
+		mgr := newTestManager(t, pod)
 		mgr.config.AgentPort = closedPort
 		mgr.SetHTTPClient(&http.Client{Timeout: 200 * time.Millisecond})
-		mgr.cache.Set("inv-transport", "127.0.0.1", "pod-transport")
+		mgr.cache.Set("inv-transport", "127.0.0.1", pod.Name)
 
 		// when
 		_, execErr := mgr.ExecuteCommand(context.Background(), "inv-transport", "echo hi", 5)
 
 		// then
 		require.Error(t, execErr)
-		_, _, ok := mgr.cache.Get("inv-transport")
-		assert.False(t, ok, "cache entry should be invalidated on transport error")
+		_, cachedName, ok := mgr.cache.Get("inv-transport")
+		assert.True(t, ok, "cache stays while the sandbox pod still exists")
+		assert.Equal(t, pod.Name, cachedName)
+		pods, listErr := mgr.clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{})
+		require.NoError(t, listErr)
+		assert.Len(t, pods.Items, 1)
 	})
 
 	t.Run("updates last-activity even if cache expires during Execute", func(t *testing.T) {
@@ -1190,6 +1195,97 @@ func TestExecuteCommandWaitsForAssignment(t *testing.T) {
 		_, err := mgr.ExecuteCommand(context.Background(), "inv-other", "echo ok", 30)
 		require.Error(t, err)
 		assert.Equal(t, int32(1), calls.Load())
+	})
+
+	t.Run("reassigns a restarted agent and retries exec", func(t *testing.T) {
+		var assigned atomic.Bool
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/assign" {
+				var got agent.AssignRequest
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if got.Token != computeToken("test-hmac-key", "inv-restart") {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				assigned.Store(true)
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			if !assigned.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"agent not assigned"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agent.ExecResponse{Stdout: "ok", Stderr: "warn\n", ExitCode: 0})
+		}))
+		t.Cleanup(ts.Close)
+
+		mgr := newTestManager(t)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.assignWait = 30 * time.Millisecond
+		mgr.assignPoll = 5 * time.Millisecond
+		mgr.cache.Set("inv-restart", "127.0.0.1", "pod-restart")
+
+		resp, err := mgr.ExecuteCommand(context.Background(), "inv-restart", "echo ok", 30)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", resp.Stdout)
+		assert.Equal(t, sessionResetNotice+"warn\n", resp.Stderr)
+		assert.True(t, assigned.Load())
+	})
+
+	t.Run("does not mark a reset when assign returns already assigned", func(t *testing.T) {
+		var assigned atomic.Bool
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/assign" {
+				assigned.Store(true)
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":"already assigned"}`))
+				return
+			}
+			if !assigned.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"agent not assigned"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(agent.ExecResponse{Stdout: "ok", Stderr: "warn\n", ExitCode: 0})
+		}))
+		t.Cleanup(ts.Close)
+
+		mgr := newTestManager(t)
+		mgr.config.AgentPort = agentPortFromURL(t, ts.URL)
+		mgr.SetHTTPClient(ts.Client())
+		mgr.assignWait = 30 * time.Millisecond
+		mgr.assignPoll = 5 * time.Millisecond
+		mgr.cache.Set("inv-assigned", "127.0.0.1", "pod-assigned")
+
+		resp, err := mgr.ExecuteCommand(context.Background(), "inv-assigned", "echo ok", 30)
+		require.NoError(t, err)
+		assert.Equal(t, "ok", resp.Stdout)
+		assert.Equal(t, "warn\n", resp.Stderr)
+	})
+
+	t.Run("drops the cache when the sandbox pod is gone", func(t *testing.T) {
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		closedPort := ln.Addr().(*net.TCPAddr).Port
+		require.NoError(t, ln.Close())
+
+		mgr := newTestManager(t)
+		mgr.config.ProxyService = "cli-mcp-oc-proxy"
+		mgr.config.AgentPort = closedPort
+		mgr.SetHTTPClient(&http.Client{Timeout: 200 * time.Millisecond})
+		mgr.cache.Set("inv-gone", "127.0.0.1", "missing-pod")
+
+		_, err = mgr.ExecuteCommand(context.Background(), "inv-gone", "echo ok", 30)
+		require.ErrorContains(t, err, "no ready endpoint")
+		_, _, ok := mgr.cache.Get("inv-gone")
+		assert.False(t, ok)
 	})
 
 	t.Run("stops waiting when the request is canceled", func(t *testing.T) {
