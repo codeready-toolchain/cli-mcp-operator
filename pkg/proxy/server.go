@@ -137,6 +137,10 @@ func newGoproxy(ca *tls.Certificate, table *routeTable, logger *slog.Logger) *go
 			return table.handle(req, logger)
 		},
 	)
+	proxy.OnResponse().DoFunc(func(resp *http.Response, _ *goproxy.ProxyCtx) *http.Response {
+		stripResponseCookies(resp)
+		return resp
+	})
 	return proxy
 }
 

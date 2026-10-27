@@ -10,6 +10,7 @@ import (
 // authHeaders are removed before injection, including on allowlist routes.
 var authHeaders = []string{
 	"Authorization",
+	"Cookie",
 	"X-Api-Key",
 	"X-Goog-Api-Key",
 	"Proxy-Authorization",
@@ -19,6 +20,9 @@ var authHeaders = []string{
 }
 
 func stripAuthHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
 	for _, header := range authHeaders {
 		req.Header.Del(header)
 	}
@@ -27,6 +31,13 @@ func stripAuthHeaders(req *http.Request) {
 			req.Header.Del(key)
 		}
 	}
+}
+
+func stripResponseCookies(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	resp.Header.Del("Set-Cookie")
 }
 
 func kubePathDenied(urlPath string) bool {

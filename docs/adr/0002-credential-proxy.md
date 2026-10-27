@@ -109,7 +109,7 @@ oc sandbox pods
   ▼
 cli-mcp-proxy (MITM)
   real kubeconfig Secret (tokens)
-  strip Authorization + Impersonate-*
+  strip Authorization, Cookie, and Impersonate-*
   inject investigation Bearer for that hostname:port
   │
   ▼
@@ -164,7 +164,7 @@ On CONNECT and on each MITM’d request:
 |---|---|
 | Host allowlist | Exact `host:port` on CONNECT and on plaintext HTTP proxy requests. The operator always writes `host:port` (kubeconfig `server` URL; allowlist bare host becomes `:443`). An IP matches only when that server or domain is already an IP. Unknown host is 403 and no tunnel. No leading-dot suffix, no wildcards, and a bare host does not match every port. IPv6 literals are a single `host:port` token. |
 | MITM | Every v1 route is MITM’d, including allowlist `none`. Leaf certificates are signed by the proxy CA. A direct CONNECT tunnel would skip strip. |
-| Strip | Before inject, drop `Authorization`, `X-Api-Key`, `X-Goog-Api-Key`, `Proxy-Authorization`, `Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`, and any `Impersonate-Extra-*`. `Via` and `X-Forwarded-For` are removed after inject. Allowlist injects nothing after strip. |
+| Strip | Before inject, drop `Authorization`, `Cookie`, `X-Api-Key`, `X-Goog-Api-Key`, `Proxy-Authorization`, `Impersonate-User`, `Impersonate-Group`, `Impersonate-Uid`, and any `Impersonate-Extra-*`. `Set-Cookie` is dropped on the response. `Via` and `X-Forwarded-For` are removed after inject. Allowlist injects nothing after strip. |
 | Inject | Strip, then deny the `exec`, `attach`, `portforward`, `proxy`, and `ephemeralcontainers` subresources (path cleaned, query ignored, and one percent-decoding), then require `https`, then inject the token for that `host:port`. A resource or namespace named `exec` is allowed. `Watch` of those subresources is denied. `logs` is allowed. A kubernetes `http` request is 403 and is not injected. Allowlist uses injector none and has no path denylist. |
 | Upstream TLS | When the kubeconfig has `certificate-authority-data`, the proxy trusts only that CA for that host and does not add public roots. When it is omitted, the proxy uses the system trust store and still checks the API hostname. Allowlist routes use the system trust store. Verification is never skipped. |
 
