@@ -13,6 +13,8 @@ func TestStripAuthHeaders(t *testing.T) {
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.example.com:6443/api", nil)
 	req.Header.Set("Authorization", "Bearer stolen")
+	req.Header.Add("Cookie", "session=stolen")
+	req.Header.Add("Cookie", "other=1")
 	req.Header.Set("X-Api-Key", "client-key")
 	req.Header.Set("Proxy-Authorization", "Basic abc")
 	req.Header.Set("Impersonate-User", "admin")
@@ -26,6 +28,7 @@ func TestStripAuthHeaders(t *testing.T) {
 	stripAuthHeaders(req)
 
 	assert.Empty(t, req.Header.Get("Authorization"))
+	assert.Empty(t, req.Header.Values("Cookie"))
 	assert.Empty(t, req.Header.Get("X-Api-Key"))
 	assert.Empty(t, req.Header.Get("Proxy-Authorization"))
 	assert.Empty(t, req.Header.Get("Impersonate-User"))
@@ -35,4 +38,19 @@ func TestStripAuthHeaders(t *testing.T) {
 	assert.Empty(t, req.Header.Get("X-Goog-Api-Key"))
 	assert.Equal(t, "evil", req.Header.Get("Via"))
 	assert.Equal(t, "1.2.3.4", req.Header.Get("X-Forwarded-For"))
+}
+
+func TestStripResponseCookies(t *testing.T) {
+	t.Parallel()
+
+	resp := &http.Response{Header: make(http.Header)}
+	resp.Header.Add("Set-Cookie", "leaked=yes")
+	resp.Header.Add("Set-Cookie", "other=1")
+	resp.Header.Set("Content-Type", "text/plain")
+
+	stripResponseCookies(resp)
+	stripResponseCookies(nil)
+
+	assert.Empty(t, resp.Header.Values("Set-Cookie"))
+	assert.Equal(t, "text/plain", resp.Header.Get("Content-Type"))
 }

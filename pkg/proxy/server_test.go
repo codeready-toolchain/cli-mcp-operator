@@ -87,6 +87,7 @@ func TestKubernetesStripInjectAndDenylist(t *testing.T) {
 	require.Len(t, seen.snapshot(), 2)
 	got := seen.snapshot()[0]
 	assert.Equal(t, "Bearer "+investigation, got.Get("Authorization"))
+	assert.Empty(t, got.Get("Cookie"))
 	assert.Empty(t, got.Get("X-Goog-Api-Key"))
 	assert.Empty(t, got.Get("X-Api-Key"))
 	assert.Empty(t, got.Get("Proxy-Authorization"))
@@ -115,8 +116,35 @@ func TestNoneStripsWithoutDenylist(t *testing.T) {
 	require.Len(t, seen.snapshot(), 1)
 	got := seen.snapshot()[0]
 	assert.Empty(t, got.Get("Authorization"))
+	assert.Empty(t, got.Get("Cookie"))
 	assert.Empty(t, got.Get("Impersonate-User"))
 	assert.Empty(t, got.Get("X-Goog-Api-Key"))
+}
+
+func TestStripsSetCookie(t *testing.T) {
+	t.Parallel()
+
+	seen := &headerLog{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.record(r)
+		w.Header().Add("Set-Cookie", "leaked=yes")
+		w.Header().Add("Set-Cookie", "other=1")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+
+	host := upstream.Listener.Addr().String()
+	srv := startProxy(t, mustParse(t, noneRoutes(t, host)), nil)
+	req := newReq(t, upstream.URL+"/headers")
+	req.Header.Set("Cookie", "session=stolen")
+	resp, err := proxyClient(t, srv.URL).Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Empty(t, resp.Header.Values("Set-Cookie"))
+	require.Len(t, seen.snapshot(), 1)
+	assert.Empty(t, seen.snapshot()[0].Get("Cookie"))
 }
 
 func TestNoneMITMUsesProxyCA(t *testing.T) {
@@ -521,6 +549,7 @@ func mustProxyRoutes(t *testing.T, cfg *clientcmdapi.Config, path string) *Confi
 func stolenHeaders() http.Header {
 	return http.Header{
 		"Authorization":            []string{"Bearer stolen"},
+		"Cookie":                   []string{"session=stolen"},
 		"X-Api-Key":                []string{"client-key"},
 		"Proxy-Authorization":      []string{"Basic abc"},
 		"Impersonate-User":         []string{"admin"},
