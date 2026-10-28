@@ -178,12 +178,12 @@ NetworkPolicy is required. Without it the model unsets `HTTPS_PROXY` and talks t
 
 | Policy | Selects | Allows |
 |---|---|---|
-| Sandbox (existing object, egress added) | This instance’s sandbox pods | Ingress: TCP `:8090` from this instance’s MCP server pods. Egress: TCP `:8080` to this instance’s proxy pods. No DNS. Port 53 and 5353 are not allowed, including to kube-dns, OpenShift DNS, and `169.254.20.10`. `curl` to an arbitrary address on port 53 is denied. |
+| Sandbox (existing object, egress added) | This instance’s sandbox pods | Ingress: TCP `:8090` from this instance’s MCP server pods. Egress: TCP `:8080` to this instance’s proxy pods. The policy includes no DNS allowance. |
 | Proxy | This instance’s proxy pods | Ingress: TCP `:8080` only from this instance’s sandbox pods. No egress rules. `policyTypes` is ingress only. Adding egress would default-deny proxy egress. |
 
 A sandbox policy whose types include egress makes those pods default-deny egress except the listed rules. A namespace-wide default-deny is not required.
 
-Sandbox pods in proxy mode use `dnsPolicy: None`, nameserver `127.0.0.1`, resolver timeout 1, one attempt, and no search list. Nothing listens on that address, so a lookup fails in the pod. `HTTPS_PROXY` is the proxy Service clusterIP, so the sandbox does not resolve the proxy Service name either. `oc` and `curl` send the API or allowlist hostname in CONNECT. The proxy still uses cluster DNS to resolve that hostname, then dials only after the route matches. Unknown CONNECT is rejected before dial. Do not allow port 53 to `0.0.0.0/0`.
+The sandbox egress policy permits only TCP `:8080` to this instance’s proxy pods and includes no DNS allowance. Sandbox DNS uses the loopback resolver `127.0.0.1` (`dnsPolicy: None`, resolver timeout 1, one attempt, no search list). Nothing listens on that address, so a lookup fails in the pod. NetworkPolicy does not provide a portable guarantee that node-local or host-network DNS listeners are blocked. `HTTPS_PROXY` is the proxy Service clusterIP, so the sandbox does not resolve the proxy Service name either. `oc` and `curl` send the API or allowlist hostname in CONNECT. The proxy still uses cluster DNS to resolve that hostname, then dials only after the route matches. Unknown CONNECT is rejected before dial. Do not allow port 53 to `0.0.0.0/0`.
 
 Selectors are instance-specific (`cli-mcp.redhat.com/instance` plus `component`), not `component=sandbox` alone. Two instances in one namespace must not reach each other’s proxies.
 
