@@ -42,6 +42,14 @@ const (
 	// returning the agent's 503.
 	agentNotAssignedWait = 5 * time.Second
 	agentNotAssignedPoll = 100 * time.Millisecond
+
+	// A restarted container is unassigned. Wait for Ready, but do not sit
+	// through a long crash-loop backoff inside one tool call.
+	sessionRecoverReadyWait = 15 * time.Second
+
+	// Keep in sync with pkg/sandbox sessionResetNotice. The server does not
+	// import the agent process.
+	sessionResetNotice = "[session state was reset — previous bash process exited]\n"
 )
 
 var sessionIDRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -58,6 +66,7 @@ type SessionManager struct {
 	agentClient  *agent.AgentClient
 	assignWait   time.Duration
 	assignPoll   time.Duration
+	recoverWait  time.Duration
 	logger       *slog.Logger
 	proxyGate    proxyGateCache
 	proxyGateTTL time.Duration
@@ -111,6 +120,7 @@ func NewSessionManager(clientset kubernetes.Interface, config SandboxConfig, log
 		proxyGateTTL: proxyGateTTL,
 		assignWait:   agentNotAssignedWait,
 		assignPoll:   agentNotAssignedPoll,
+		recoverWait:  sessionRecoverReadyWait,
 	}
 	return mgr, nil
 }
@@ -587,13 +597,28 @@ func (m *SessionManager) ExecuteCommand(ctx context.Context, sessionID, command 
 	token := computeToken(m.config.HMACKey, sessionID)
 	// Capture podName before Execute: cache TTL can expire during long-running commands.
 	_, podName, _ := m.cache.Get(sessionID)
-	execResp, err := m.executeWhenAssigned(ctx, podIP, token, agent.ExecRequest{
-		Command: command,
-		Timeout: timeoutSec,
-	})
+	req := agent.ExecRequest{Command: command, Timeout: timeoutSec}
+	execResp, err := m.executeWhenAssigned(ctx, podIP, token, req)
+	recovered := false
+	if err != nil && recoverableSession(err) {
+		recovered = true
+		resp, recErr := m.recoverSession(ctx, sessionID, podIP, podName, token, req, err)
+		if recErr == nil {
+			execResp = resp
+			err = nil
+			if _, name, ok := m.cache.Get(sessionID); ok {
+				podName = name
+			}
+		} else {
+			err = recErr
+		}
+	}
 	if err != nil {
+		// Recovery drops the cache only after the pod is gone. A network
+		// error against a pod that is still there must keep the entry so a
+		// concurrent exec does not claim a second pod.
 		var netErr *agent.NetworkError
-		if errors.As(err, &netErr) {
+		if errors.As(err, &netErr) && !recovered {
 			m.cache.Invalidate(sessionID, podIP)
 		}
 		return nil, fmt.Errorf("agent request: %w", err)
@@ -637,6 +662,145 @@ func agentNotAssigned(err error) bool {
 		return false
 	}
 	return statusErr.StatusCode == http.StatusServiceUnavailable && strings.Contains(statusErr.Body, "agent not assigned")
+}
+
+func recoverableSession(err error) bool {
+	return agentNotAssigned(err) || isNetwork(err)
+}
+
+func isNetwork(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr *agent.NetworkError
+	return errors.As(err, &netErr)
+}
+
+func alreadyAssigned(err error) bool {
+	var statusErr *agent.StatusError
+	return errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusConflict
+}
+
+// recoverSession runs only after executeWhenAssigned gives up. That wait is
+// the in-flight claim assign. A later 503 means the container restarted and
+// the new agent process is unassigned. Re-assign the same HMAC token, or
+// replace the pod when it is gone.
+func (m *SessionManager) recoverSession(ctx context.Context, sessionID, podIP, podName, token string, req agent.ExecRequest, cause error) (*agent.ExecResponse, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if agentNotAssigned(cause) && podIP != "" {
+		assignedByUs, assignErr := m.reassign(ctx, podIP, token)
+		if assignErr == nil {
+			// One recovery exec. A failure, including a network error, is
+			// returned. The next call retries. Do not start a second recovery.
+			resp, execErr := m.agentClient.Execute(ctx, podIP, token, req)
+			if execErr != nil {
+				return nil, execErr
+			}
+			if assignedByUs {
+				noteSessionReset(resp)
+			}
+			return resp, nil
+		}
+		if errors.Is(assignErr, context.Canceled) || errors.Is(assignErr, context.DeadlineExceeded) {
+			return nil, assignErr
+		}
+		if !isNetwork(assignErr) {
+			return nil, cause
+		}
+	}
+	return m.recoverOnNewPod(ctx, sessionID, podIP, podName, token, req)
+}
+
+func (m *SessionManager) reassign(ctx context.Context, podIP, token string) (bool, error) {
+	err := m.agentClient.Assign(ctx, podIP, agent.AssignRequest{Token: token})
+	if err == nil {
+		return true, nil
+	}
+	if alreadyAssigned(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (m *SessionManager) recoverOnNewPod(ctx context.Context, sessionID, podIP, podName, token string, req agent.ExecRequest) (*agent.ExecResponse, error) {
+	ip, replaced, err := m.podForRecovery(ctx, sessionID, podIP, podName)
+	if err != nil {
+		return nil, err
+	}
+	assignedByUs, assignErr := m.reassign(ctx, ip, token)
+	if assignErr != nil {
+		return nil, assignErr
+	}
+	resp, execErr := m.agentClient.Execute(ctx, ip, token, req)
+	if execErr != nil {
+		return nil, execErr
+	}
+	if replaced || assignedByUs {
+		noteSessionReset(resp)
+	}
+	return resp, nil
+}
+
+func (m *SessionManager) podForRecovery(ctx context.Context, sessionID, podIP, podName string) (string, bool, error) {
+	if podName != "" {
+		ip, keep, err := m.waitRecoveredPod(ctx, sessionID, podName)
+		if err != nil || keep {
+			return ip, false, err
+		}
+	}
+	// Drop the stale IP so GetOrCreatePod does not return it and skip claim.
+	m.cache.Invalidate(sessionID, podIP)
+	ip, err := m.GetOrCreatePod(ctx, sessionID)
+	if err != nil {
+		return "", true, err
+	}
+	return ip, true, nil
+}
+
+// waitRecoveredPod returns keep=true when the named pod is still the session
+// pod. keep=false means the caller should claim or create a replacement.
+func (m *SessionManager) waitRecoveredPod(ctx context.Context, sessionID, podName string) (string, bool, error) {
+	pod, err := m.clientset.CoreV1().Pods(m.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if k8serrors.IsNotFound(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get sandbox pod: %w", err)
+	}
+	if pod.DeletionTimestamp != nil || isTerminalPod(pod) {
+		return "", false, nil
+	}
+	if !isPodReady(pod) {
+		waitCtx, cancel := context.WithTimeout(ctx, m.recoverWait)
+		readyIP, waitErr := m.waitForReady(waitCtx, podName)
+		cancel()
+		if waitErr == nil && readyIP != "" {
+			m.cache.Set(sessionID, readyIP, podName)
+			return readyIP, true, nil
+		}
+		pod, err = m.clientset.CoreV1().Pods(m.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if k8serrors.IsNotFound(err) || (err == nil && (pod.DeletionTimestamp != nil || isTerminalPod(pod))) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("get sandbox pod: %w", err)
+		}
+		return "", true, fmt.Errorf("sandbox pod %s not ready: %w", podName, waitErr)
+	}
+	if pod.Status.PodIP == "" {
+		return "", false, nil
+	}
+	m.cache.Set(sessionID, pod.Status.PodIP, podName)
+	return pod.Status.PodIP, true, nil
+}
+
+func noteSessionReset(resp *agent.ExecResponse) {
+	if resp == nil {
+		return
+	}
+	resp.Stderr = sessionResetNotice + resp.Stderr
 }
 
 func (m *SessionManager) updateLastActivity(ctx context.Context, podName string) {
