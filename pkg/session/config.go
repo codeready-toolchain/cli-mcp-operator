@@ -15,6 +15,9 @@ const (
 	ProxyListenPort int32 = 8080
 	// NoProxyValue keeps loopback off the proxy. Cluster DNS names are not listed.
 	NoProxyValue = "127.0.0.1,localhost,::1"
+	// SandboxLoopbackResolver is the only nameserver on a proxy-mode sandbox.
+	// Nothing listens on it, so lookups fail inside the pod.
+	SandboxLoopbackResolver = "127.0.0.1"
 	// ProxyCAFile is the sandbox path of the proxy CA certificate.
 	ProxyCAFile = "/etc/cli-mcp/proxy-ca/ca.crt"
 	// KubeconfigPath is KUBECONFIG inside the sandbox.
@@ -65,7 +68,11 @@ type SandboxConfig struct {
 	// DummyKubeconfigConfigMap is the dummy kubeconfig ConfigMap. Set for a kubernetes target.
 	DummyKubeconfigConfigMap string
 	// ProxyService is the credential proxy Service name. Empty skips HTTPS_PROXY and the fail-closed gate.
+	// The name is the EndpointSlice key. It is not the sandbox proxy URL.
 	ProxyService string
+	// ProxyClusterIP is the credential proxy Service clusterIP. Required when ProxyService is set.
+	// Sandbox proxy env uses this address so the sandbox does not resolve the Service name.
+	ProxyClusterIP string
 	// ProxyCASecret is the MITM CA Secret. Required with ProxyService.
 	ProxyCASecret   string
 	AgentPort       int

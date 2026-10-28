@@ -439,8 +439,11 @@ func isPodReady(pod *corev1.Pod) bool {
 
 // buildPodSpec constructs a session-specific pod by applying session fields
 // (session-id label, SANDBOX_AUTH_TOKEN env) on top of the shared base pod spec.
-func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
-	pod := BuildBasePodSpec(podNamePrefix+sessionID, m.config)
+func (m *SessionManager) buildPodSpec(sessionID string) (*corev1.Pod, error) {
+	pod, err := BuildBasePodSpec(podNamePrefix+sessionID, m.config)
+	if err != nil {
+		return nil, err
+	}
 	pod.Labels[LabelSessionID] = sessionID
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
 		Name: "SANDBOX_AUTH_TOKEN",
@@ -453,7 +456,7 @@ func (m *SessionManager) buildPodSpec(sessionID string) *corev1.Pod {
 			},
 		},
 	})
-	return pod
+	return pod, nil
 }
 
 // buildAuthSecret constructs the per-session auth Secret containing the
@@ -522,6 +525,11 @@ func (m *SessionManager) waitForReady(ctx context.Context, podName string) (stri
 }
 
 func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string) (podIP, podName string, err error) {
+	pod, err := m.buildPodSpec(sessionID)
+	if err != nil {
+		return "", "", err
+	}
+
 	token := computeToken(m.config.HMACKey, sessionID)
 
 	secret := buildAuthSecret(m.config.Namespace, m.config.InstanceName, sessionID, token)
@@ -530,7 +538,6 @@ func (m *SessionManager) createSandboxPod(ctx context.Context, sessionID string)
 		return "", "", fmt.Errorf("create auth secret: %w", err)
 	}
 
-	pod := m.buildPodSpec(sessionID)
 	created, err := m.clientset.CoreV1().Pods(m.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
 		if k8serrors.IsAlreadyExists(err) {

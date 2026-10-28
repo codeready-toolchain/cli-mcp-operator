@@ -270,7 +270,11 @@ func TestOverlayHashIgnoresInvestigationSecret(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: kubeconfigSecretName("oc"), Namespace: "ns"},
 		Data:       map[string][]byte{kubeconfigDataKey: []byte("token-a")},
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inst, cm, ca, admin).Build()
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: "ns"},
+		Spec:       corev1.ServiceSpec{ClusterIP: testProxyClusterIP},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(inst, cm, ca, admin, svc).Build()
 	r := &CliMcpInstanceReconciler{Client: c}
 	cfg := r.poolSandboxConfig(inst)
 	assert.Empty(t, cfg.KubeconfigSecret)
@@ -278,24 +282,25 @@ func TestOverlayHashIgnoresInvestigationSecret(t *testing.T) {
 	assert.Equal(t, proxyName("oc"), cfg.ProxyService)
 	assert.Equal(t, proxyCASecretName("oc"), cfg.ProxyCASecret)
 
-	_, dummy, caBytes, err := r.overlayInputs(t.Context(), inst)
+	got, dummy, caBytes, err := r.overlayInputs(t.Context(), inst)
 	require.NoError(t, err)
-	first, err := overlayHash(cfg, dummy, caBytes)
+	assert.Equal(t, testProxyClusterIP, got.ProxyClusterIP)
+	first, err := overlayHash(got, dummy, caBytes)
 	require.NoError(t, err)
 
 	admin.Data[kubeconfigDataKey] = []byte("token-b")
 	require.NoError(t, c.Update(t.Context(), admin))
-	_, dummy, caBytes, err = r.overlayInputs(t.Context(), inst)
+	got, dummy, caBytes, err = r.overlayInputs(t.Context(), inst)
 	require.NoError(t, err)
-	second, err := overlayHash(cfg, dummy, caBytes)
+	second, err := overlayHash(got, dummy, caBytes)
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
 
 	cm.Data[kubeconfigDataKey] = "dummy-b"
 	require.NoError(t, c.Update(t.Context(), cm))
-	_, dummy, caBytes, err = r.overlayInputs(t.Context(), inst)
+	got, dummy, caBytes, err = r.overlayInputs(t.Context(), inst)
 	require.NoError(t, err)
-	third, err := overlayHash(cfg, dummy, caBytes)
+	third, err := overlayHash(got, dummy, caBytes)
 	require.NoError(t, err)
 	assert.NotEqual(t, first, third)
 }
@@ -447,20 +452,29 @@ func TestMCPServerArgsOmitPoolAndIdle(t *testing.T) {
 	inst := &climcpv1alpha1.CliMcpInstance{}
 	inst.Name = "oc"
 	inst.Namespace = "ns"
-	args, err := mcpServerArgs(inst, sandboxOverlay(climcpv1alpha1.SandboxSpec{}, "sandbox:tag"))
+	overlay := sandboxOverlay(climcpv1alpha1.SandboxSpec{}, "sandbox:tag")
+	overlay.ProxyClusterIP = testProxyClusterIP
+	args, err := mcpServerArgs(inst, overlay)
 	require.NoError(t, err)
 	assert.NotContains(t, args, "--warm-pool-size")
 	assert.NotContains(t, args, "--idle-timeout")
 	assert.Contains(t, args, "--instance-name")
 	assert.Contains(t, args, "--proxy-service")
+	assert.Contains(t, args, "--proxy-cluster-ip")
+	assert.Contains(t, args, testProxyClusterIP)
 	assert.Contains(t, args, "--proxy-ca-secret")
 	assert.NotContains(t, args, "--kubeconfig-secret")
 	assert.NotContains(t, args, "--dummy-kubeconfig-configmap")
 	assert.Contains(t, args, "--sandbox-service-account")
 
+	_, err = mcpServerArgs(inst, sandboxOverlay(climcpv1alpha1.SandboxSpec{}, "sandbox:tag"))
+	require.Error(t, err)
+
 	kube := inst.DeepCopy()
 	kube.Spec.Proxy = kubernetesProxySpec()
-	args, err = mcpServerArgs(kube, sandboxOverlay(climcpv1alpha1.SandboxSpec{}, "sandbox:tag"))
+	kubeOverlay := sandboxOverlay(climcpv1alpha1.SandboxSpec{}, "sandbox:tag")
+	kubeOverlay.ProxyClusterIP = testProxyClusterIP
+	args, err = mcpServerArgs(kube, kubeOverlay)
 	require.NoError(t, err)
 	assert.Contains(t, args, "--dummy-kubeconfig-configmap")
 	assert.Contains(t, args, proxyName("oc"))
@@ -883,7 +897,7 @@ func TestReconcilePoolRelistsAfterPartialMutate(t *testing.T) {
 			Sandbox: climcpv1alpha1.SandboxSpec{WarmPoolSize: 1, Image: "img:test"},
 		},
 	}
-	hash, err := overlayHash((&CliMcpInstanceReconciler{}).poolSandboxConfig(inst), nil, nil)
+	hash, err := overlayHash(poolConfigForHash(inst), nil, nil)
 	require.NoError(t, err)
 
 	now := time.Now()
@@ -923,7 +937,7 @@ func TestReconcilePoolTerminatingOccupiesSlot(t *testing.T) {
 			Sandbox: climcpv1alpha1.SandboxSpec{WarmPoolSize: 1, Image: "img:test"},
 		},
 	}
-	hash, err := overlayHash((&CliMcpInstanceReconciler{}).poolSandboxConfig(inst), nil, nil)
+	hash, err := overlayHash(poolConfigForHash(inst), nil, nil)
 	require.NoError(t, err)
 
 	terminating := sandboxPod("dying", "", time.Now(), time.Now())
@@ -994,7 +1008,7 @@ func TestReconcilePoolReplacesStaleWhenDeleteSucceeds(t *testing.T) {
 			Sandbox: climcpv1alpha1.SandboxSpec{WarmPoolSize: 1, Image: "img:test"},
 		},
 	}
-	hash, err := overlayHash((&CliMcpInstanceReconciler{}).poolSandboxConfig(inst), nil, nil)
+	hash, err := overlayHash(poolConfigForHash(inst), nil, nil)
 	require.NoError(t, err)
 
 	stale := sandboxPod("stale", "", time.Now(), time.Now())
@@ -1069,9 +1083,21 @@ func sandboxPod(name, sessionID string, created, activity time.Time) corev1.Pod 
 	}
 }
 
+const testProxyClusterIP = "10.96.0.15"
+
+func poolConfigForHash(inst *climcpv1alpha1.CliMcpInstance) session.SandboxConfig {
+	cfg := (&CliMcpInstanceReconciler{}).poolSandboxConfig(inst)
+	cfg.ProxyClusterIP = testProxyClusterIP
+	return cfg
+}
+
 func poolGateObjects() []client.Object {
 	ready := true
 	return []client.Object{
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: "ns"},
+			Spec:       corev1.ServiceSpec{ClusterIP: testProxyClusterIP},
+		},
 		&corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: proxyName("oc"), Namespace: "ns"},
 			Data:       map[string]string{proxyConfigDataKey: `{"routes":[]}`},

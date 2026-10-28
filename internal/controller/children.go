@@ -246,6 +246,11 @@ func (r *CliMcpInstanceReconciler) applyDeployment(ctx context.Context, inst *cl
 	if overlay.Image == "" {
 		return fmt.Errorf("sandbox image is empty: set spec.sandbox.image or %s", envRelatedImageSandbox)
 	}
+	ip, err := r.proxyClusterIP(ctx, inst)
+	if err != nil {
+		return err
+	}
+	overlay.ProxyClusterIP = ip
 	args, err := mcpServerArgs(inst, overlay)
 	if err != nil {
 		return err
@@ -285,6 +290,9 @@ func (r *CliMcpInstanceReconciler) applyDeployment(ctx context.Context, inst *cl
 }
 
 func mcpServerArgs(inst *climcpv1alpha1.CliMcpInstance, overlay session.SandboxConfig) ([]string, error) {
+	if _, err := session.ProxyURL(overlay.ProxyClusterIP); err != nil {
+		return nil, fmt.Errorf("proxy service %s: %w", proxyName(inst.Name), err)
+	}
 	args := []string{
 		"--transport", "http",
 		"--stateless",
@@ -294,6 +302,7 @@ func mcpServerArgs(inst *climcpv1alpha1.CliMcpInstance, overlay session.SandboxC
 		"--sandbox-image", overlay.Image,
 		"--hmac-key-file", hmacMountPath + "/" + hmacSecretKey,
 		"--proxy-service", proxyName(inst.Name),
+		"--proxy-cluster-ip", overlay.ProxyClusterIP,
 		"--proxy-ca-secret", proxyCASecretName(inst.Name),
 		"--sandbox-service-account", sandboxSAName(inst.Name),
 		"--sandbox-cpu-request", overlay.CPURequest,

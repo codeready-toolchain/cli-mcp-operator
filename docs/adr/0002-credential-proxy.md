@@ -55,7 +55,7 @@ This pass adds a fourth image, `cli-mcp-proxy`: a MITM forward proxy inspired by
 | 4 | Does Ready parse the kubeconfig? | When a kubernetes target exists, parse the effective Secret as token-only. Invalid kubeconfig is not Ready, reason `KubeconfigInvalid`. Allowlist-only instances skip this Secret. Proxy children fold into the same `Ready`. There is no separate `ProxyReady` condition. | Key-present without a parse leaves Ready while every `oc` is dead, and the proxy cannot build routes from garbage. A second condition cannot be watched by the MCP server ([ADR-0001](0001-cli-mcp-operator.md) decision 9). Missing object stays `SecretsNotFound`. Empty key stays `SecretKeysInvalid`. Dummy data, kubernetes routes, and the kubeconfig volume on the proxy are not written until parse succeeds. |
 | 5 | Fail closed for both pod writers | The operator does not create or replenish unassigned pods until the routes ConfigMap exists (dummy key when a kubernetes target exists), the sandbox NetworkPolicy has egress, the proxy NetworkPolicy exists, and this proxy Service has a ready EndpointSlice address. The MCP server, using flags rather than a custom-resource watch, lists that Service’s EndpointSlices and reads the sandbox NetworkPolicy before on-demand create and before claim. Already-assigned sessions are not gated. Local runs without proxy flags do not gate. | Sandbox pods created before egress exists have unrestricted egress, which is the original bug. Withholding only the MCP Deployment is not enough: running replicas would still create open sandboxes. A namespace default-deny was already rejected. The MCP server must not watch the custom resource, so the gate is flags plus named reads. Another Service’s EndpointSlice must not open the gate. Slice names are generated, so the read is a list filtered by service name, not a named get. Core Endpoints are deprecated and cannot be name-scoped the same way. |
 | 6 | Proxy authentication | NetworkPolicy only. No `Proxy-Authorization` on CONNECT. | The proxy ingress policy is what stops other pods from using `:8080`. A principal that can create pods in the instance namespace can mount the investigation kubeconfig and skip the proxy with unrestricted egress. Basic auth on CONNECT does not close that path, and the secret would be readable from sandbox bash. Label spoofing of `component=sandbox` is the same create-pod compromise. |
-| 7 | Proxy egress | No proxy egress NetworkPolicy. The host allowlist is L7 route match on this instance’s targets. Sandbox egress (proxy plus cluster DNS) and proxy ingress stay. | NetworkPolicy matches IP and port, not DNS names. A wide `443`/`6443` block does not enforce hostnames and breaks an allowlist host on another port. Resolving hostnames at reconcile time and writing address blocks fails when that resolution differs from connect time (split horizon, load-balancer churn, a different DNS view). Unknown CONNECT is still 403. A compromised proxy can already read the mounted kubeconfig. |
+| 7 | Proxy egress | No proxy egress NetworkPolicy. The host allowlist is L7 route match on this instance’s targets. Sandbox egress is TCP `:8080` to this instance’s proxy pods. Sandbox pods do not use cluster DNS. Proxy ingress stays. | NetworkPolicy matches IP and port, not DNS names. A wide `443`/`6443` block does not enforce hostnames and breaks an allowlist host on another port. Resolving API hostnames at reconcile time and writing address blocks fails when that resolution differs from connect time (split horizon, load-balancer churn, a different DNS view). The sandbox proxy URL is the proxy Service clusterIP, which is not an API address. Unknown CONNECT is still 403 before dial. A compromised proxy can already read the mounted kubeconfig. |
 | 8 | Raw IP CONNECT | Reject CONNECT unless the host matches a route `host:port`. An IP is allowed only when that kubeconfig `server` or allowlist domain is already an IP. Do not resolve names and add address records. No suffix match, no wildcard, and a bare host does not match every port. | With no proxy egress policy, an unmatched IP could still tunnel. Strip-then-inject does not help when the IP is not in the route map. Mapping resolved addresses onto the same token has the same drift problem as decision 7, and a shared load-balancer address may front more than the API. |
 | 9 | Kube subresource denylist | On kubernetes injector routes only, deny URL path suffixes `exec`, `attach`, `portforward`, and `proxy`. Canonicalize the path and ignore the query. `logs`, `watch`, and `explain` stay allowed. Allowlist routes are not filtered. | Investigation RBAC should already deny these. Unconstrained bash can still attempt them. The denylist survives a RoleBinding mistake and does not break `curl` to an HTTP API whose path happens to contain `/exec`. Applying it to allowlist routes would. RBAC remains authoritative. |
 | 10 | How much of the claw proxy to take | Implement only what this proxy needs: MITM on CONNECT and on plaintext HTTP proxy requests, a kubernetes injector, a `none` injector that still MITMs, strip-then-inject, exact `host:port`, the path denylist, upstream TLS verification, and SIGTERM shutdown. Do not vendor the claw proxy package. | Claw’s `none` injector opens a direct CONNECT tunnel and would skip strip. Suffix and wildcard match, gateway path allowlists, bearer, GCP, and oauth2 injectors are unused. A later class that must inject a static bearer is a new injector then. Owning the code avoids a release coupling and allows the differences this record locks (proxy ingress policy, no proxy egress policy, `subPath` mounts, dedicated ServiceAccount). |
@@ -103,7 +103,7 @@ cli-mcp-server (instance=<CR name>)
   ▼
 oc sandbox pods
   dummy KUBECONFIG (real server URLs, placeholder token, proxy CA)
-  HTTPS_PROXY=http://cli-mcp-<name>-proxy:8080
+  HTTPS_PROXY=http://<proxy Service clusterIP>:8080
   automountServiceAccountToken: false
   │  CONNECT api.<cluster>:6443
   ▼
@@ -178,12 +178,12 @@ NetworkPolicy is required. Without it the model unsets `HTTPS_PROXY` and talks t
 
 | Policy | Selects | Allows |
 |---|---|---|
-| Sandbox (existing object, egress added) | This instance’s sandbox pods | Ingress: TCP `:8090` from this instance’s MCP server pods. Egress: TCP `:8080` to this instance’s proxy pods, plus DNS. DNS is not `0.0.0.0/0`. UDP/TCP 53 and 5353 only to DNS pods. Each peer is a namespace selector and a pod selector together: `kube-system` (`kubernetes.io/metadata.name=kube-system`) with `k8s-app=kube-dns`, and on OpenShift `openshift-dns` with `dns.operator.openshift.io/daemonset-dns=default`. Plus address `169.254.20.10/32` on UDP/TCP 53 only (NodeLocal DNSCache). `curl` to an arbitrary address on port 53 is denied. |
+| Sandbox (existing object, egress added) | This instance’s sandbox pods | Ingress: TCP `:8090` from this instance’s MCP server pods. Egress: TCP `:8080` to this instance’s proxy pods. No DNS. Port 53 and 5353 are not allowed, including to kube-dns, OpenShift DNS, and `169.254.20.10`. `curl` to an arbitrary address on port 53 is denied. |
 | Proxy | This instance’s proxy pods | Ingress: TCP `:8080` only from this instance’s sandbox pods. No egress rules. `policyTypes` is ingress only. Adding egress would default-deny proxy egress. |
 
 A sandbox policy whose types include egress makes those pods default-deny egress except the listed rules. A namespace-wide default-deny is not required.
 
-Sandbox pods keep cluster DNS policy. Lookups of an attacker name through cluster DNS can still recurse; closing that would break kube API hostnames. Do not allow port 53 to `0.0.0.0/0`.
+Sandbox pods in proxy mode use `dnsPolicy: None`, nameserver `127.0.0.1`, resolver timeout 1, one attempt, and no search list. Nothing listens on that address, so a lookup fails in the pod. `HTTPS_PROXY` is the proxy Service clusterIP, so the sandbox does not resolve the proxy Service name either. `oc` and `curl` send the API or allowlist hostname in CONNECT. The proxy still uses cluster DNS to resolve that hostname, then dials only after the route matches. Unknown CONNECT is rejected before dial. Do not allow port 53 to `0.0.0.0/0`.
 
 Selectors are instance-specific (`cli-mcp.redhat.com/instance` plus `component`), not `component=sandbox` alone. Two instances in one namespace must not reach each other’s proxies.
 
@@ -254,7 +254,8 @@ The MCP ServiceAccount does not get secret get. The dummy ConfigMap is mounted b
 | ServiceAccount and automount | Unchanged from [ADR-0001](0001-cli-mcp-operator.md): `cli-mcp-<name>-sandbox`, automount false |
 | Kubeconfig volume | Dummy ConfigMap, `subPath` `kubeconfig`, when a kubernetes target exists. Omitted for allowlist-only |
 | Proxy CA volume | Secret `cli-mcp-<name>-proxy-ca`, `subPath` `ca.crt`, for `SSL_CERT_FILE`. Assigned pods must not see a later CA rewrite |
-| Env | `HTTP_PROXY`, `HTTPS_PROXY`, and the lowercase copies are `http://cli-mcp-<name>-proxy:8080`. Port 8080 is a constant. `NO_PROXY` and `no_proxy` are `127.0.0.1,localhost,::1`. Both cases are set because clients disagree on which spelling they honor. `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` point at the proxy CA. `KUBECONFIG=/config/kubeconfig` only with a kubernetes target. Those names are reserved and the operator wins. Do not put `.svc`, `.cluster.local`, the proxy Service name, or API hostnames in `NO_PROXY` |
+| Env | `HTTP_PROXY`, `HTTPS_PROXY`, and the lowercase copies are `http://<proxy Service clusterIP>:8080`. The operator reads `spec.clusterIP` after it applies the proxy Service. Empty or `None` fails closed: sandbox pods are not created. Port 8080 is a constant. IPv6 is bracketed. `NO_PROXY` and `no_proxy` are `127.0.0.1,localhost,::1`. Both cases are set because clients disagree on which spelling they honor. `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE` point at the proxy CA. `KUBECONFIG=/config/kubeconfig` only with a kubernetes target. Those names are reserved and the operator wins. Do not put `.svc`, `.cluster.local`, the proxy Service name, or API hostnames in `NO_PROXY` |
+| DNS | Proxy mode sets `dnsPolicy: None` and nameserver `127.0.0.1`. Non-proxy mode keeps the cluster default |
 | Readiness | Unchanged: exec curl of plain HTTP loopback `/health` |
 
 A broad cluster-local `NO_PROXY` would let `oc` reach the in-cluster API directly.
@@ -304,7 +305,7 @@ The operator renders Deployment args. The MCP server does not watch the custom r
 |---|---|---|
 | Kubeconfig Secret | Not passed. The real Secret is not a sandbox mount. | Optional. If set and proxy flags are omitted, the real Secret is mounted. |
 | Dummy kubeconfig ConfigMap | `cli-mcp-<name>-proxy` when a kubernetes target exists. Omitted for allowlist-only. | Omitted means no dummy. |
-| Proxy Service | Always `cli-mcp-<name>-proxy`. Port 8080 is code, not a flag. | Omitted means no `HTTPS_PROXY` and no fail-closed reads. |
+| Proxy Service | Always `cli-mcp-<name>-proxy`. `--proxy-cluster-ip` is that Service’s clusterIP. Sandbox proxy env is `http://<ip>:8080`. The Service name stays the EndpointSlice key. Port 8080 is code, not a flag. | Omitted means no `HTTPS_PROXY`. With the Service flag, the cluster IP flag is required. |
 | Proxy CA Secret | Always `cli-mcp-<name>-proxy-ca` when the proxy Service flag is set. | Omitted together with the proxy Service flag. |
 
 The sandbox NetworkPolicy name for the fail-closed read is `cli-mcp-<instance>-sandbox`, derived from the instance name.
@@ -370,7 +371,7 @@ The MCP Role may list EndpointSlices in the namespace (no resource names; slice 
 - A namespace EgressFirewall to kube API addresses together with the proxy.
 - Per-session proxy pods, proxy sidecars, and one shared proxy for several classes.
 - Defaulting an omitted `spec.proxy` to kubernetes.
-- DNS port 53 to `0.0.0.0/0`, and blocking recursive lookups through cluster DNS.
+- DNS port 53 to `0.0.0.0/0`, and a filtering DNS sidecar.
 - Automatic proxy CA rotation, a reloader, or in-process reload of kubeconfig and CA.
 - Sandbox `oc` / `curl` retry wrappers and a generational proxy Service.
 - Per-user credentials. The investigation kubeconfig stays shared.

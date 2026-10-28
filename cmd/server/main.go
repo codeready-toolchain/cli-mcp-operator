@@ -37,6 +37,7 @@ func main() {
 		kubeconfig               string
 		kubeconfigSecret         string
 		proxyService             string
+		proxyClusterIP           string
 		proxyCASecret            string
 		dummyKubeconfigConfigMap string
 		sandboxServiceAccount    string
@@ -65,6 +66,7 @@ func main() {
 				kubeconfig:               kubeconfig,
 				kubeconfigSecret:         kubeconfigSecret,
 				proxyService:             proxyService,
+				proxyClusterIP:           proxyClusterIP,
 				proxyCASecret:            proxyCASecret,
 				dummyKubeconfigConfigMap: dummyKubeconfigConfigMap,
 				sandboxServiceAccount:    sandboxServiceAccount,
@@ -90,6 +92,7 @@ func main() {
 	rootCmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig for the MCP process's Kubernetes client (empty = in-cluster); not the investigation Secret")
 	rootCmd.Flags().StringVar(&kubeconfigSecret, "kubeconfig-secret", "", "Investigation kubeconfig Secret mounted into sandbox pods when proxy flags are unset (required in that mode)")
 	rootCmd.Flags().StringVar(&proxyService, "proxy-service", "", "Credential proxy Service name (required with --proxy-ca-secret)")
+	rootCmd.Flags().StringVar(&proxyClusterIP, "proxy-cluster-ip", "", "Credential proxy Service clusterIP (required with --proxy-service)")
 	rootCmd.Flags().StringVar(&proxyCASecret, "proxy-ca-secret", "", "Proxy CA Secret name (required with --proxy-service)")
 	rootCmd.Flags().StringVar(&dummyKubeconfigConfigMap, "dummy-kubeconfig-configmap", "", "Dummy kubeconfig ConfigMap mounted when a kubernetes proxy target exists")
 	rootCmd.Flags().StringVar(&sandboxServiceAccount, "sandbox-service-account", "", "ServiceAccount name for sandbox pods (required)")
@@ -118,6 +121,7 @@ type runConfig struct {
 	kubeconfig               string
 	kubeconfigSecret         string
 	proxyService             string
+	proxyClusterIP           string
 	proxyCASecret            string
 	dummyKubeconfigConfigMap string
 	sandboxServiceAccount    string

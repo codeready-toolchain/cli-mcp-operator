@@ -304,7 +304,10 @@ func (r *CliMcpInstanceReconciler) unassignedOccupiesSlot(ctx context.Context, p
 }
 
 func (r *CliMcpInstanceReconciler) createPoolPod(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance, cfg session.SandboxConfig, hash string) error {
-	pod := session.BuildBasePodSpec(poolPodNamePrefix+uuid.NewString(), cfg)
+	pod, err := session.BuildBasePodSpec(poolPodNamePrefix+uuid.NewString(), cfg)
+	if err != nil {
+		return err
+	}
 	if pod.Annotations == nil {
 		pod.Annotations = map[string]string{}
 	}
