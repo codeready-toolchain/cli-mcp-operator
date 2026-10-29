@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -112,28 +113,27 @@ func registerInstanceTests() {
 		Expect(err).NotTo(HaveOccurred(), pod)
 		Expect(pod).To(ContainSubstring(`"automountServiceAccountToken": false`))
 		Expect(pod).To(ContainSubstring(`"name": "cli-mcp-oc-proxy"`))
-		Expect(pod).To(ContainSubstring(`"value": "http://cli-mcp-oc-proxy:8080"`))
+		ocProxy := proxyURL("cli-mcp-oc-proxy")
+		Expect(pod).To(ContainSubstring(`"value": "` + ocProxy + `"`))
+		Expect(pod).To(ContainSubstring(`"dnsPolicy": "None"`))
+		Expect(pod).To(ContainSubstring(`"127.0.0.1"`))
 		Expect(pod).NotTo(ContainSubstring("cli-mcp-oc-kubeconfig"))
 
 		out, err := sandboxExec(ocSandbox, "printenv HTTPS_PROXY")
 		Expect(err).NotTo(HaveOccurred(), out)
-		Expect(strings.TrimSpace(out)).To(Equal("http://cli-mcp-oc-proxy:8080"))
+		Expect(strings.TrimSpace(out)).To(Equal(ocProxy))
 
 		out, err = sandboxExec(allowSandbox, "printenv HTTPS_PROXY")
 		Expect(err).NotTo(HaveOccurred(), out)
-		Expect(strings.TrimSpace(out)).To(Equal("http://cli-mcp-curlinst-proxy:8080"))
+		Expect(strings.TrimSpace(out)).To(Equal(proxyURL("cli-mcp-curlinst-proxy")))
 		_, err = sandboxExec(allowSandbox, "test ! -e /config/kubeconfig && test -f /etc/cli-mcp/proxy-ca/ca.crt")
 		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("cannot reach the API when the proxy is cleared", func() {
-		out, err := sandboxExec(ocSandbox, "getent hosts kubernetes.default.svc")
-		Expect(err).NotTo(HaveOccurred(), out)
-		fields := strings.Fields(out)
-		Expect(fields).NotTo(BeEmpty())
-		apiIP := fields[0]
+		apiIP := serviceClusterIP("default", "kubernetes")
 
-		_, err = sandboxExec(ocSandbox, withoutProxy(
+		_, err := sandboxExec(ocSandbox, withoutProxy(
 			"curl -k --max-time 3 --connect-timeout 3 "+shellQuote(httpsURL(apiIP))))
 		Expect(err).To(HaveOccurred())
 
@@ -190,20 +190,20 @@ func registerInstanceTests() {
 		Expect(err).To(HaveOccurred())
 
 		_, err = sandboxExec(allowSandbox, withoutProxy(
-			"curl --max-time 5 --connect-timeout 3 http://cli-mcp-oc-proxy:8080/"))
+			"curl --max-time 5 --connect-timeout 3 "+proxyHTTP("cli-mcp-oc-proxy")))
 		Expect(err).To(HaveOccurred())
 
 		_, err = sandboxExec(ocSandbox, withoutProxy(
-			"curl --max-time 5 --connect-timeout 3 http://cli-mcp-curlinst-proxy:8080/"))
+			"curl --max-time 5 --connect-timeout 3 "+proxyHTTP("cli-mcp-curlinst-proxy")))
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("denies egress to port 53 that is not cluster DNS", func() {
-		out, err := sandboxExec(ocSandbox, "getent hosts kubernetes.default.svc")
-		Expect(err).NotTo(HaveOccurred(), out)
-		apiIP := strings.Fields(out)[0]
+	It("denies DNS and port 53 egress", func() {
+		_, err := sandboxExec(ocSandbox, "getent hosts kubernetes.default.svc")
+		Expect(err).To(HaveOccurred())
+		apiIP := serviceClusterIP("default", "kubernetes")
 
-		out, err = sandboxExec(ocSandbox, withoutProxy("curl --max-time 3 --connect-timeout 3 http://192.0.2.1:53"))
+		out, err := sandboxExec(ocSandbox, withoutProxy("curl --max-time 3 --connect-timeout 3 http://192.0.2.1:53"))
 		Expect(err).To(HaveOccurred())
 		Expect(out).To(MatchRegexp(`(?i)timed out|timeout`))
 
@@ -223,7 +223,8 @@ func registerInstanceTests() {
 		Expect(err).To(HaveOccurred(), out)
 		Expect(out).To(ContainSubstring("403"), out)
 
-		body, err := sandboxExec(allowSandbox, `bash -c 'exec 3<>/dev/tcp/cli-mcp-curlinst-proxy/8080 && printf "CONNECT kubernetes.default.svc:443 HTTP/1.1\r\nHost: kubernetes.default.svc:443\r\nConnection: close\r\n\r\n" >&3 && timeout 5 cat <&3'`)
+		proxyIP := serviceClusterIP(namespace, "cli-mcp-curlinst-proxy")
+		body, err := sandboxExec(allowSandbox, fmt.Sprintf(`bash -c 'exec 3<>/dev/tcp/%s/8080 && printf "CONNECT kubernetes.default.svc:443 HTTP/1.1\r\nHost: kubernetes.default.svc:443\r\nConnection: close\r\n\r\n" >&3 && timeout 5 cat <&3'`, proxyIP))
 		Expect(err).NotTo(HaveOccurred(), body)
 		Expect(body).To(ContainSubstring("403"))
 		Expect(body).To(ContainSubstring("domain not allowed"))
@@ -620,6 +621,22 @@ func sandboxExecWithToken(pod, token, script string) (string, error) {
 		return string(out), fmt.Errorf("%q failed with error %q: %w", strings.Join(cmd.Args, " "), out, err)
 	}
 	return string(out), nil
+}
+
+func serviceClusterIP(ns, name string) string {
+	out, err := kubectl("get", "svc", name, "-n", ns, "-o", "jsonpath={.spec.clusterIP}")
+	Expect(err).NotTo(HaveOccurred(), out)
+	ip := strings.TrimSpace(out)
+	Expect(net.ParseIP(ip)).NotTo(BeNil(), out)
+	return ip
+}
+
+func proxyURL(service string) string {
+	return "http://" + net.JoinHostPort(serviceClusterIP(namespace, service), "8080")
+}
+
+func proxyHTTP(service string) string {
+	return proxyURL(service) + "/"
 }
 
 func shellQuote(s string) string {

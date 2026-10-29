@@ -20,10 +20,13 @@ func buildSandboxConfig(cfg runConfig, hmacKey string) (session.SandboxConfig, e
 	if cfg.instanceName == "" {
 		return session.SandboxConfig{}, fmt.Errorf("--instance-name is required")
 	}
-	proxyMode := cfg.proxyService != "" || cfg.proxyCASecret != "" || cfg.dummyKubeconfigConfigMap != ""
+	proxyMode := cfg.proxyService != "" || cfg.proxyCASecret != "" || cfg.dummyKubeconfigConfigMap != "" || cfg.proxyClusterIP != ""
 	if proxyMode {
 		if cfg.proxyService == "" || cfg.proxyCASecret == "" {
 			return session.SandboxConfig{}, fmt.Errorf("--proxy-service and --proxy-ca-secret are required together")
+		}
+		if _, err := session.ProxyURL(cfg.proxyClusterIP); err != nil {
+			return session.SandboxConfig{}, fmt.Errorf("--proxy-cluster-ip: %w", err)
 		}
 		if cfg.kubeconfigSecret != "" {
 			return session.SandboxConfig{}, fmt.Errorf("--kubeconfig-secret must be empty when proxy flags are set")
@@ -70,6 +73,7 @@ func buildSandboxConfig(cfg runConfig, hmacKey string) (session.SandboxConfig, e
 		KubeconfigSecret:         cfg.kubeconfigSecret,
 		DummyKubeconfigConfigMap: cfg.dummyKubeconfigConfigMap,
 		ProxyService:             cfg.proxyService,
+		ProxyClusterIP:           cfg.proxyClusterIP,
 		ProxyCASecret:            cfg.proxyCASecret,
 		CPURequest:               cpuRequest,
 		CPULimit:                 cpuLimit,

@@ -3,6 +3,8 @@ package session
 import (
 	"cmp"
 	"fmt"
+	"net"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -16,15 +18,21 @@ import (
 // today's non-root / drop-caps security context, then merges the class overlay
 // (image, resources, env, imagePullPolicy). Callers add session-specific
 // fields (session-id label, SANDBOX_AUTH_TOKEN env) on assigned pods only.
-func BuildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
+// Proxy mode returns an error when the cluster IP is missing, so a pod is never
+// created with a hostname proxy URL.
+func BuildBasePodSpec(name string, config SandboxConfig) (*corev1.Pod, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	runAsNonRoot := true
 	allowPrivEsc := false
 	automount := false
 	defaults := DefaultConfig()
 	agentPort := cmp.Or(config.AgentPort, defaults.AgentPort)
+	env, err := overlaySandboxEnv(config)
+	if err != nil {
+		return nil, err
+	}
 
-	return &corev1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: config.Namespace,
@@ -89,25 +97,54 @@ func BuildBasePodSpec(name string, config SandboxConfig) *corev1.Pod {
 							Drop: []corev1.Capability{"ALL"},
 						},
 					},
-					Env:          overlaySandboxEnv(config),
+					Env:          env,
 					VolumeMounts: sandboxMounts(config),
 				},
 			},
 			Volumes: sandboxVolumes(config),
 		},
 	}
+	if config.ProxyService != "" {
+		pod.Spec.DNSPolicy = corev1.DNSNone
+		pod.Spec.DNSConfig = sandboxDNS()
+	}
+	return pod, nil
+}
+
+// ProxyURL is the sandbox HTTP proxy address. clusterIP is the proxy Service
+// clusterIP. The Service name is not a URL host.
+func ProxyURL(clusterIP string) (string, error) {
+	if net.ParseIP(clusterIP) == nil {
+		return "", fmt.Errorf("proxy cluster IP %q is not an IP", clusterIP)
+	}
+	return "http://" + net.JoinHostPort(clusterIP, strconv.Itoa(int(ProxyListenPort))), nil
+}
+
+func sandboxDNS() *corev1.PodDNSConfig {
+	timeout := "1"
+	attempts := "1"
+	return &corev1.PodDNSConfig{
+		Nameservers: []string{SandboxLoopbackResolver},
+		Options: []corev1.PodDNSConfigOption{
+			{Name: "timeout", Value: &timeout},
+			{Name: "attempts", Value: &attempts},
+		},
+	}
 }
 
 // OperatorEnv is the env the sandbox builder owns. User overlay entries with
 // these names are dropped.
-func OperatorEnv(config SandboxConfig) []corev1.EnvVar {
+func OperatorEnv(config SandboxConfig) ([]corev1.EnvVar, error) {
 	env := make([]corev1.EnvVar, 0, 10)
 	if config.DummyKubeconfigConfigMap != "" || config.KubeconfigSecret != "" {
 		env = append(env, corev1.EnvVar{Name: "KUBECONFIG", Value: KubeconfigPath})
 	}
 	env = append(env, corev1.EnvVar{Name: "HOME", Value: "/workspace"})
 	if config.ProxyService != "" {
-		proxyURL := fmt.Sprintf("http://%s:%d", config.ProxyService, ProxyListenPort)
+		proxyURL, err := ProxyURL(config.ProxyClusterIP)
+		if err != nil {
+			return nil, fmt.Errorf("proxy service %s: %w", config.ProxyService, err)
+		}
 		for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 			env = append(env, corev1.EnvVar{Name: name, Value: proxyURL})
 		}
@@ -121,18 +158,21 @@ func OperatorEnv(config SandboxConfig) []corev1.EnvVar {
 			corev1.EnvVar{Name: "REQUESTS_CA_BUNDLE", Value: ProxyCAFile},
 		)
 	}
-	return env
+	return env, nil
 }
 
-func overlaySandboxEnv(config SandboxConfig) []corev1.EnvVar {
-	env := OperatorEnv(config)
+func overlaySandboxEnv(config SandboxConfig) ([]corev1.EnvVar, error) {
+	env, err := OperatorEnv(config)
+	if err != nil {
+		return nil, err
+	}
 	for _, e := range config.Env {
 		if _, reserved := reservedSandboxEnv[e.Name]; reserved {
 			continue
 		}
 		env = append(env, e)
 	}
-	return env
+	return env, nil
 }
 
 func sandboxMounts(config SandboxConfig) []corev1.VolumeMount {

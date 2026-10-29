@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	"net"
 	"slices"
 	"strings"
 	"time"
@@ -54,8 +55,6 @@ const (
 	proxyConfigDir           = "/etc/cli-mcp/proxy"
 	proxyCADir               = "/etc/cli-mcp/proxy-ca"
 	proxyKubeDir             = "/etc/kube"
-
-	nodeLocalDNS = "169.254.20.10/32"
 )
 
 var (
@@ -601,50 +600,24 @@ func proxyVolumes(instance, kubeSecret string) []corev1.Volume {
 }
 
 func sandboxEgress(instance string) []networkingv1.NetworkPolicyEgressRule {
-	dnsPorts := npPorts(
-		portPair{port: 53, proto: corev1.ProtocolUDP},
-		portPair{port: 53, proto: corev1.ProtocolTCP},
-		portPair{port: 5353, proto: corev1.ProtocolUDP},
-		portPair{port: 5353, proto: corev1.ProtocolTCP},
-	)
-	return []networkingv1.NetworkPolicyEgressRule{
-		{
-			To: []networkingv1.NetworkPolicyPeer{{
-				PodSelector: &metav1.LabelSelector{MatchLabels: proxyLabels(instance)},
-			}},
-			Ports: npPorts(portPair{port: session.ProxyListenPort, proto: corev1.ProtocolTCP}),
-		},
-		{
-			To:    []networkingv1.NetworkPolicyPeer{dnsPeer("kube-system", "k8s-app", "kube-dns")},
-			Ports: dnsPorts,
-		},
-		{
-			To: []networkingv1.NetworkPolicyPeer{
-				dnsPeer("openshift-dns", "dns.operator.openshift.io/daemonset-dns", "default"),
-			},
-			Ports: dnsPorts,
-		},
-		{
-			To: []networkingv1.NetworkPolicyPeer{{
-				IPBlock: &networkingv1.IPBlock{CIDR: nodeLocalDNS},
-			}},
-			Ports: npPorts(
-				portPair{port: 53, proto: corev1.ProtocolUDP},
-				portPair{port: 53, proto: corev1.ProtocolTCP},
-			),
-		},
-	}
+	return []networkingv1.NetworkPolicyEgressRule{{
+		To: []networkingv1.NetworkPolicyPeer{{
+			PodSelector: &metav1.LabelSelector{MatchLabels: proxyLabels(instance)},
+		}},
+		Ports: npPorts(portPair{port: session.ProxyListenPort, proto: corev1.ProtocolTCP}),
+	}}
 }
 
-func dnsPeer(namespace, labelKey, labelValue string) networkingv1.NetworkPolicyPeer {
-	return networkingv1.NetworkPolicyPeer{
-		NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-			"kubernetes.io/metadata.name": namespace,
-		}},
-		PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
-			labelKey: labelValue,
-		}},
+func (r *CliMcpInstanceReconciler) proxyClusterIP(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (string, error) {
+	name := proxyName(inst.Name)
+	svc := &corev1.Service{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: inst.Namespace, Name: name}, svc); err != nil {
+		return "", fmt.Errorf("get proxy service %s: %w", name, err)
 	}
+	if net.ParseIP(svc.Spec.ClusterIP) == nil {
+		return "", fmt.Errorf("proxy service %s has no cluster IP", name)
+	}
+	return svc.Spec.ClusterIP, nil
 }
 
 type portPair struct {

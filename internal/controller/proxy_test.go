@@ -35,6 +35,7 @@ import (
 
 	climcpv1alpha1 "github.com/codeready-toolchain/cli-mcp-operator/api/v1alpha1"
 	"github.com/codeready-toolchain/cli-mcp-operator/pkg/kubeconfig"
+	"github.com/codeready-toolchain/cli-mcp-operator/pkg/session"
 )
 
 func TestSandboxEgressIsInstanceScoped(t *testing.T) {
@@ -52,42 +53,25 @@ func TestSandboxEgressIsInstanceScoped(t *testing.T) {
 	assert.NotEqual(t, proxyIngressSpec("aws").PodSelector.MatchLabels, proxyNP.PodSelector.MatchLabels)
 }
 
-func TestSandboxEgressDNSPeers(t *testing.T) {
+func TestSandboxEgressAllowsOnlyTheProxy(t *testing.T) {
 	t.Parallel()
 	rules := sandboxEgress("oc")
-	require.Len(t, rules, 4)
-
-	kubeDNS := rules[1].To[0]
-	require.NotNil(t, kubeDNS.NamespaceSelector)
-	require.NotNil(t, kubeDNS.PodSelector)
-	assert.Equal(t, "kube-system", kubeDNS.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
-	assert.Equal(t, "kube-dns", kubeDNS.PodSelector.MatchLabels["k8s-app"])
-
-	openshiftDNS := rules[2].To[0]
-	assert.Equal(t, "openshift-dns", openshiftDNS.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"])
-	assert.Equal(t, "default", openshiftDNS.PodSelector.MatchLabels["dns.operator.openshift.io/daemonset-dns"])
-
-	block := rules[3].To[0].IPBlock
-	require.NotNil(t, block)
-	assert.Equal(t, "169.254.20.10/32", block.CIDR)
-	assert.Empty(t, block.Except)
+	require.Len(t, rules, 1)
+	require.Len(t, rules[0].Ports, 1)
+	require.NotNil(t, rules[0].Ports[0].Port)
+	assert.Equal(t, session.ProxyListenPort, rules[0].Ports[0].Port.IntVal)
+	assert.Equal(t, corev1.ProtocolTCP, *rules[0].Ports[0].Protocol)
 	for _, rule := range rules {
+		for _, port := range rule.Ports {
+			require.NotNil(t, port.Port)
+			assert.NotEqual(t, int32(53), port.Port.IntVal)
+			assert.NotEqual(t, int32(5353), port.Port.IntVal)
+		}
 		for _, peer := range rule.To {
-			if peer.IPBlock == nil {
-				continue
-			}
-			assert.NotEqual(t, "0.0.0.0/0", peer.IPBlock.CIDR)
+			assert.Nil(t, peer.IPBlock)
+			assert.Nil(t, peer.NamespaceSelector)
 		}
 	}
-	var dns53 int
-	for _, port := range rules[3].Ports {
-		require.NotNil(t, port.Port)
-		if port.Port.IntVal == 53 {
-			dns53++
-		}
-		assert.NotEqual(t, int32(5353), port.Port.IntVal)
-	}
-	assert.Equal(t, 2, dns53)
 }
 
 func TestProxyPoolOpenUsesServiceLabel(t *testing.T) {

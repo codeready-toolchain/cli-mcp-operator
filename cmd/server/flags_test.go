@@ -153,6 +153,7 @@ func TestBuildSandboxConfigProxyMode(t *testing.T) {
 	cfg := validRunConfig()
 	cfg.kubeconfigSecret = ""
 	cfg.proxyService = "cli-mcp-oc-proxy"
+	cfg.proxyClusterIP = "10.96.0.15"
 	cfg.proxyCASecret = "cli-mcp-oc-proxy-ca"
 	cfg.dummyKubeconfigConfigMap = "cli-mcp-oc-proxy"
 
@@ -160,6 +161,7 @@ func TestBuildSandboxConfigProxyMode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, got.KubeconfigSecret)
 	assert.Equal(t, "cli-mcp-oc-proxy", got.ProxyService)
+	assert.Equal(t, "10.96.0.15", got.ProxyClusterIP)
 	assert.Equal(t, "cli-mcp-oc-proxy-ca", got.ProxyCASecret)
 	assert.Equal(t, "cli-mcp-oc-proxy", got.DummyKubeconfigConfigMap)
 
@@ -173,4 +175,12 @@ func TestBuildSandboxConfigProxyMode(t *testing.T) {
 	_, err = buildSandboxConfig(cfg, "hmac")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--proxy-service and --proxy-ca-secret")
+
+	cfg.proxyCASecret = "cli-mcp-oc-proxy-ca"
+	for _, bad := range []string{"", "None", "cli-mcp-oc-proxy"} {
+		cfg.proxyClusterIP = bad
+		_, err = buildSandboxConfig(cfg, "hmac")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--proxy-cluster-ip")
+	}
 }

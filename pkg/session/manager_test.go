@@ -581,7 +581,8 @@ func TestBuildPodSpec(t *testing.T) {
 	mgr := newTestManager(t)
 
 	// when
-	pod := mgr.buildPodSpec("inv-spec")
+	pod, err := mgr.buildPodSpec("inv-spec")
+	require.NoError(t, err)
 
 	// then — name and namespace
 	assert.Equal(t, podNamePrefix+"inv-spec", pod.Name)
@@ -906,6 +907,7 @@ func proxySandboxConfig() SandboxConfig {
 	cfg := newTestConfig()
 	cfg.KubeconfigSecret = ""
 	cfg.ProxyService = "cli-mcp-oc-proxy"
+	cfg.ProxyClusterIP = "10.96.0.15"
 	cfg.ProxyCASecret = "cli-mcp-oc-proxy-ca"
 	return cfg
 }

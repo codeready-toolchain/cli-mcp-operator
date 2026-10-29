@@ -93,6 +93,13 @@ func (r *CliMcpInstanceReconciler) poolSandboxConfig(inst *climcpv1alpha1.CliMcp
 
 func (r *CliMcpInstanceReconciler) overlayInputs(ctx context.Context, inst *climcpv1alpha1.CliMcpInstance) (session.SandboxConfig, []byte, []byte, error) {
 	cfg := r.poolSandboxConfig(inst)
+	if cfg.ProxyService != "" {
+		ip, err := r.proxyClusterIP(ctx, inst)
+		if err != nil {
+			return cfg, nil, nil, err
+		}
+		cfg.ProxyClusterIP = ip
+	}
 	var dummy, ca []byte
 	if cfg.DummyKubeconfigConfigMap != "" {
 		cm := &corev1.ConfigMap{}
@@ -131,6 +138,10 @@ type overlayFingerprint struct {
 }
 
 func overlayHash(cfg session.SandboxConfig, dummy, ca []byte) (string, error) {
+	opEnv, err := session.OperatorEnv(cfg)
+	if err != nil {
+		return "", err
+	}
 	raw, err := json.Marshal(overlayFingerprint{
 		Image:           cfg.Image,
 		CPURequest:      cfg.CPURequest,
@@ -139,7 +150,7 @@ func overlayHash(cfg session.SandboxConfig, dummy, ca []byte) (string, error) {
 		MemoryLimit:     cfg.MemoryLimit,
 		ImagePullPolicy: cfg.ImagePullPolicy,
 		Env:             cfg.Env,
-		OperatorEnv:     session.OperatorEnv(cfg),
+		OperatorEnv:     opEnv,
 		DummyKubeconfig: dummy,
 		ProxyCA:         ca,
 	})

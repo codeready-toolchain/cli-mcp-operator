@@ -2,7 +2,7 @@
 
 How CLI MCP works.
 
-An MCP client gets a persistent bash shell in its own pod. Commands reach allowed hosts through this instance’s credential proxy. DNS lookups use the cluster DNS. The proxy allows that instance’s targets and discards the token the shell presents. A `kubernetes` target then injects the investigation credential. An `allowlist` target injects nothing.
+An MCP client gets a persistent bash shell in its own pod. Commands reach allowed hosts through this instance’s credential proxy. The sandbox does not resolve names. The proxy resolves allowed hostnames and discards the token the shell presents. A `kubernetes` target then injects the investigation credential. An `allowlist` target injects nothing.
 
 ```mermaid
 flowchart TB
@@ -95,7 +95,7 @@ Deleting the custom resource scales the MCP Deployment to zero, waits until its 
 
 The sandbox ServiceAccount has no RoleBindings and does not automount a token. There is no command allowlist.
 
-With a kubernetes target the sandbox mounts a dummy kubeconfig: the real API hostnames, the token `proxy-managed-token`, and the proxy CA. The admin kubeconfig Secret is mounted only on the proxy. `HTTPS_PROXY` points at this instance’s proxy Service. `NO_PROXY` is loopback only, so calls to the API hostname go through the proxy. The network policy blocks a direct call, unset HTTPS_PROXY, and --server..
+With a kubernetes target the sandbox mounts a dummy kubeconfig: the real API hostnames, the token `proxy-managed-token`, and the proxy CA. The admin kubeconfig Secret is mounted only on the proxy. `HTTPS_PROXY` is the proxy Service clusterIP. The sandbox uses `dnsPolicy: None` and does not resolve the API hostname. `NO_PROXY` is loopback only, so calls to that hostname go through the proxy, which resolves it. The network policy blocks a direct call, unset HTTPS_PROXY, and --server.
 
 The proxy, on every CONNECT and every proxied request:
 
@@ -120,7 +120,7 @@ Policies are per instance (`instance` + `component`), so two classes in one name
 | Policy | Allows |
 |---|---|
 | Sandbox ingress | TCP `:8090` from this instance’s MCP server pods |
-| Sandbox egress | TCP `:8080` to this instance’s proxy, plus cluster DNS (CoreDNS, OpenShift DNS, and the node-local cache address) |
+| Sandbox egress | TCP `:8080` to this instance’s proxy. No DNS |
 | Proxy ingress | TCP `:8080` from this instance’s sandbox pods |
 | Proxy egress | Unrestricted at the network. The host allowlist is enforced in the proxy. |
 

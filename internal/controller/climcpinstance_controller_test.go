@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -151,7 +152,12 @@ var _ = Describe("CliMcpInstance Controller", func() {
 		Expect(args).NotTo(ContainElement("--idle-timeout"))
 		Expect(args).To(ContainElement("--instance-name"))
 		Expect(args).To(ContainElement("--proxy-service"))
+		Expect(args).To(ContainElement("--proxy-cluster-ip"))
 		Expect(args).To(ContainElement("--proxy-ca-secret"))
+		proxySvc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: proxyName("oc"), Namespace: ns.Name}, proxySvc)).To(Succeed())
+		Expect(net.ParseIP(proxySvc.Spec.ClusterIP)).NotTo(BeNil())
+		Expect(args).To(ContainElement(proxySvc.Spec.ClusterIP))
 		Expect(args).NotTo(ContainElement("--kubeconfig-secret"))
 		Expect(*deploy.Spec.Replicas).To(Equal(int32(1)))
 		proxy := deploy.Spec.Template.Spec.Containers[1]
