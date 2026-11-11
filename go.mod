@@ -1,6 +1,6 @@
 module github.com/codeready-toolchain/cli-mcp-operator
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/codeready-toolchain/mcp-common v0.0.0-20260811143708-491c72342347
