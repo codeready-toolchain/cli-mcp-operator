@@ -3,7 +3,7 @@ module github.com/codeready-toolchain/cli-mcp-operator
 go 1.27.4
 
 require (
-	github.com/codeready-toolchain/mcp-common v0.0.0-20260811143708-491c72342347
+	github.com/codeready-toolchain/mcp-common v0.0.0-20261112030844-de0f0cc45638
 	github.com/elazarl/goproxy v1.8.3
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.4.1
